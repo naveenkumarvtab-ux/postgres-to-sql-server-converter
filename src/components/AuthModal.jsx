@@ -73,6 +73,7 @@ export default function AuthModal({ onAuthSuccess, onBypass }) {
         }
 
         const resetLink = `${window.location.origin}/?reset_token=${token}`;
+        console.log('DEVELOPER DIAGNOSTIC: Reset Password URL is:', resetLink);
 
         const response = await fetch('https://api.brevo.com/v3/smtp/email', {
           method: 'POST',
