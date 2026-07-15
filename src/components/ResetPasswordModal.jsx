@@ -62,7 +62,7 @@ export default function ResetPasswordModal({ resetToken, onClose }) {
       if (resetToken) {
         // Option 2: Brevo Custom Reset Token Flow using Supabase RPC function
         const { data, error: rpcErr } = await supabase.rpc('reset_password_with_token', {
-          token_val: resetToken,
+          token_val: (resetToken || '').trim(),
           new_password: password
         });
 
