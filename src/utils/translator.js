@@ -499,7 +499,7 @@ export function translateTableConstraint(constraintText, warnings = null) {
  * Automagically translates classified objects into T-SQL.
  * PL/pgSQL objects will be returned with a tag indicating they require AI translation.
  */
-export function translateObject(obj, useUnicode = true, metadata = null, enums = null, domains = null, composites = null) {
+export function translateObject(obj, useUnicode = true, metadata = null, enums = null, domains = null, composites = null, schemaMap = { 'public': 'dbo' }) {
   const result = {
     tsql: '',
     warnings: [],
@@ -740,6 +740,9 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
       result.warnings.push(`Unrecognized SQL statement (skipped or commented out).`);
     }
   }
+
+  // Apply standard SQL conversion rules to clean up T-SQL output
+  result.tsql = applySqlConversionRules(result.tsql, useUnicode, schemaMap);
 
   // Validate generated SQL Server syntax before returning
   const tsqlValWarnings = validateTsql(result.tsql, obj.type, `${obj.schema}.${obj.name}`);
@@ -1003,5 +1006,255 @@ export function validateTableTsql(tsql, tableName, warnings) {
       }
     }
   }
+}
+
+export function splitParenthesesArguments(argStr) {
+  const args = [];
+  let current = '';
+  let parenLevel = 0;
+  let inSingleQuote = false;
+  
+  for (let i = 0; i < argStr.length; i++) {
+    const char = argStr[i];
+    if (char === "'" && argStr[i-1] !== '\\') {
+      inSingleQuote = !inSingleQuote;
+      current += char;
+    } else if (!inSingleQuote && char === '(') {
+      parenLevel++;
+      current += char;
+    } else if (!inSingleQuote && char === ')') {
+      parenLevel--;
+      current += char;
+    } else if (!inSingleQuote && char === ',' && parenLevel === 0) {
+      args.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  if (current.trim() || args.length > 0) {
+    args.push(current.trim());
+  }
+  return args;
+}
+
+const pgFormatToTsqlStyle = {
+  'yyyy-mm-dd': 120,
+  'yyyy/mm/dd': 111,
+  'dd/mm/yyyy': 103,
+  'mm/dd/yyyy': 101,
+  'dd-mm-yyyy': 105,
+  'mm-dd-yyyy': 110,
+  'yyyymmdd': 112,
+  'yyyy.mm.dd': 102,
+  'mon dd, yyyy': 107,
+  'month dd, yyyy': 107
+};
+
+export function translateToDate(expr, formatPart) {
+  const formatClean = formatPart.trim();
+  
+  if (/^CASE\b/i.test(formatClean)) {
+    let translatedCase = formatClean;
+    const whenThenRegex = /WHEN\s+(.*?)\s+THEN\s+'([^']+)'/gi;
+    translatedCase = translatedCase.replace(whenThenRegex, (match, cond, fmt) => {
+      const style = pgFormatToTsqlStyle[fmt.toLowerCase()] || 120;
+      return `WHEN ${cond} THEN TRY_CONVERT(DATE, ${expr}, ${style})`;
+    });
+    translatedCase = translatedCase.replace(/ELSE\s+'([^']+)'/gi, (match, fmt) => {
+      const style = pgFormatToTsqlStyle[fmt.toLowerCase()] || 120;
+      return `ELSE TRY_CONVERT(DATE, ${expr}, ${style})`;
+    });
+    return translatedCase;
+  } else {
+    const fmt = formatClean.replace(/^['"]|['"]$/g, '').toLowerCase();
+    const style = pgFormatToTsqlStyle[fmt] || 120;
+    return `TRY_CONVERT(DATE, ${expr}, ${style})`;
+  }
+}
+
+export function translateAge(exprStr) {
+  const args = splitParenthesesArguments(exprStr);
+  let start = '';
+  let end = 'GETDATE()';
+  if (args.length >= 2) {
+    end = args[0].trim();
+    start = args[1].trim();
+  } else if (args.length === 1) {
+    start = args[0].trim();
+  } else {
+    return '0';
+  }
+  return `CASE WHEN DATEADD(YEAR, DATEDIFF(YEAR, ${start}, ${end}), ${start}) > ${end} THEN DATEDIFF(YEAR, ${start}, ${end}) - 1 ELSE DATEDIFF(YEAR, ${start}, ${end}) END`;
+}
+
+export function translateCall(procedureName, argsStr, schemaMap = { 'public': 'dbo' }) {
+  const parts = procedureName.split('.');
+  let schema = 'dbo';
+  let name = procedureName;
+  if (parts.length > 1) {
+    schema = schemaMap[parts[0].trim()] || parts[0].trim();
+    name = parts[1].trim();
+  }
+  const args = splitParenthesesArguments(argsStr);
+  if (args.length === 0 || (args.length === 1 && args[0].trim() === '')) {
+    return `EXEC [${schema}].[${name}];`;
+  }
+  const formattedArgs = args.map((arg, idx) => `@Param${idx + 1}=${arg.trim()}`).join(', ');
+  return `EXEC [${schema}].[${name}] ${formattedArgs};`;
+}
+
+function mapIntervalUnit(unit) {
+  const u = unit.toLowerCase();
+  if (u.startsWith('year')) return 'year';
+  if (u.startsWith('month')) return 'month';
+  if (u.startsWith('week')) return 'week';
+  if (u.startsWith('day')) return 'day';
+  if (u.startsWith('hour')) return 'hour';
+  if (u.startsWith('minute')) return 'minute';
+  if (u.startsWith('second')) return 'second';
+  return 'day';
+}
+
+export function translateIntervals(sql) {
+  let clean = sql;
+  const intervalRegex = /([a-zA-Z0-9_\.\(\)\[\]'"]+)\s*([+\-])\s*interval\s+'(-?\d+)\s+(\w+)'/gi;
+  clean = clean.replace(intervalRegex, (match, expr, op, valStr, unit) => {
+    const val = parseInt(valStr) * (op === '-' ? -1 : 1);
+    const mappedUnit = mapIntervalUnit(unit);
+    return `DATEADD(${mappedUnit}, ${val}, ${expr})`;
+  });
+  return clean;
+}
+
+export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'public': 'dbo' }) {
+  let clean = sql;
+
+  // 1. Schema Mapping (e.g. [public].tableName or public.tableName or public.functionName)
+  for (const [oldSchema, newSchema] of Object.entries(schemaMap)) {
+    const regex1 = new RegExp(`\\[${oldSchema}\\]\\.\\[([a-zA-Z0-9_]+)\\]`, 'gi');
+    clean = clean.replace(regex1, `[${newSchema}].[$1]`);
+    
+    const regex2 = new RegExp(`\\b${oldSchema}\\.([a-zA-Z0-9_]+)\\b`, 'gi');
+    clean = clean.replace(regex2, `[${newSchema}].[$1]`);
+  }
+
+  // 2. NOW() and CURRENT_TIMESTAMP
+  clean = clean.replace(/\bnow\(\)/gi, 'CURRENT_TIMESTAMP');
+  clean = clean.replace(/\bcurrent_date\b/gi, 'CONVERT(DATE, GETDATE())');
+
+  // 3. EOMONTH + interval year subtraction
+  const dateTruncEomonthRegex = /DATE_TRUNC\s*\(\s*'month'\s*,\s*([a-zA-Z0-9_\.\(\)\[\]'""\s+\-*\/]+?)\s*\)\s*-\s*interval\s+'1\s+day'/gi;
+  clean = clean.replace(dateTruncEomonthRegex, (match, expr) => {
+    const translatedExpr = applySqlConversionRules(expr, useUnicode, schemaMap);
+    return `EOMONTH(${translatedExpr}, -1)`;
+  });
+
+  // 4. DATE_TRUNC mapping
+  const dateTruncRegex = /DATE_TRUNC\s*\(\s*'(\w+)'\s*,\s*(.*?)\s*\)/gi;
+  clean = clean.replace(dateTruncRegex, (match, unit, expr) => {
+    const translatedExpr = applySqlConversionRules(expr, useUnicode, schemaMap);
+    const u = unit.toLowerCase();
+    if (u === 'year') {
+      return `DATEADD(year, DATEDIFF(year, 0, ${translatedExpr}), 0)`;
+    } else if (u === 'month') {
+      return `DATEADD(month, DATEDIFF(month, 0, ${translatedExpr}), 0)`;
+    } else if (u === 'quarter') {
+      return `DATEADD(quarter, DATEDIFF(quarter, 0, ${translatedExpr}), 0)`;
+    } else if (u === 'week') {
+      return `DATEADD(week, DATEDIFF(week, 0, ${translatedExpr}), 0)`;
+    } else if (u === 'day') {
+      return `CONVERT(DATE, ${translatedExpr})`;
+    }
+    return `DATEADD(${u}, DATEDIFF(${u}, 0, ${translatedExpr}), 0)`;
+  });
+
+  // 5. TO_DATE mapping
+  let toDateIdx = clean.toUpperCase().indexOf('TO_DATE');
+  while (toDateIdx !== -1) {
+    const startParen = clean.indexOf('(', toDateIdx);
+    if (startParen !== -1) {
+      let level = 1;
+      let endParen = -1;
+      for (let i = startParen + 1; i < clean.length; i++) {
+        if (clean[i] === '(') level++;
+        if (clean[i] === ')') {
+          level--;
+          if (level === 0) {
+            endParen = i;
+            break;
+          }
+        }
+      }
+      if (endParen !== -1) {
+        const body = clean.substring(startParen + 1, endParen);
+        const args = splitParenthesesArguments(body);
+        if (args.length >= 2) {
+          const expr = args[0].trim();
+          const format = args.slice(1).join(',').trim();
+          const translatedToDate = translateToDate(expr, format);
+          clean = clean.substring(0, toDateIdx) + translatedToDate + clean.substring(endParen + 1);
+        }
+      }
+    }
+    toDateIdx = clean.toUpperCase().indexOf('TO_DATE', toDateIdx + 7);
+  }
+
+  // 6. DATE_PART('year', AGE()) or EXTRACT(YEAR FROM AGE())
+  const datePartAgeRegex = /DATE_PART\s*\(\s*'year'\s*,\s*AGE\s*\((.*?)\)\s*\)/gi;
+  clean = clean.replace(datePartAgeRegex, (match, ageExpr) => {
+    return translateAge(ageExpr);
+  });
+  const extractAgeRegex = /EXTRACT\s*\(\s*YEAR\s+FROM\s+AGE\s*\((.*?)\)\s*\)/gi;
+  clean = clean.replace(extractAgeRegex, (match, ageExpr) => {
+    return translateAge(ageExpr);
+  });
+
+  // 7. AGE(expr)
+  let ageIdx = clean.toUpperCase().indexOf('AGE(');
+  while (ageIdx !== -1) {
+    // Prevent matching DATE_PART or EXTRACT wrappers
+    const prevSub = clean.substring(Math.max(0, ageIdx - 15), ageIdx).toUpperCase();
+    if (prevSub.includes('DATE_PART') || prevSub.includes('EXTRACT')) {
+      ageIdx = clean.toUpperCase().indexOf('AGE(', ageIdx + 4);
+      continue;
+    }
+    const startParen = ageIdx + 3;
+    let level = 1;
+    let endParen = -1;
+    for (let i = startParen + 1; i < clean.length; i++) {
+      if (clean[i] === '(') level++;
+      if (clean[i] === ')') {
+        level--;
+        if (level === 0) {
+          endParen = i;
+          break;
+        }
+      }
+    }
+    if (endParen !== -1) {
+      const body = clean.substring(startParen + 1, endParen);
+      const translatedAge = translateAge(body);
+      clean = clean.substring(0, ageIdx) + translatedAge + clean.substring(endParen + 1);
+    }
+    ageIdx = clean.toUpperCase().indexOf('AGE(', ageIdx + 4);
+  }
+
+  // 8. CALL mapping
+  const callRegex = /\bCALL\s+([a-zA-Z0-9_\.]+)\s*\((.*?)\)\s*;?/gi;
+  clean = clean.replace(callRegex, (match, procName, argsStr) => {
+    return translateCall(procName, argsStr, schemaMap);
+  });
+
+  // 9. INTERVAL conversion
+  clean = translateIntervals(clean);
+
+  // 10. Perform, Return Query, Create Temp Table, Boolean/Serial/Array replacements
+  clean = clean.replace(/\bPERFORM\s+([a-zA-Z0-9_.\(\)\[\]]+);?/gi, 'EXEC $1');
+  clean = clean.replace(/\bRETURN\s+QUERY\s+SELECT\b/gi, 'SELECT');
+  clean = clean.replace(/\bCREATE\s+TEMP\s+TABLE\s+([a-zA-Z0-9_]+)/gi, 'CREATE TABLE #$1');
+  clean = clean.replace(/\bCREATE\s+TEMPORARY\s+TABLE\s+([a-zA-Z0-9_]+)/gi, 'CREATE TABLE #$1');
+
+  return clean;
 }
 

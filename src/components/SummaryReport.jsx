@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 
-export default function SummaryReport({ objects, onReset, onBackToWorkspace }) {
+export default function SummaryReport({ objects, validationReport, onReset, onBackToWorkspace }) {
   const [activeTab, setActiveTab] = useState('metrics');
   const [allowExportAnyway, setAllowExportAnyway] = useState(false);
   
@@ -219,6 +219,12 @@ _Note: Double check all functions and trigger behaviors before deploying to prod
           >
             Combined T-SQL Script
           </button>
+          <button 
+            className={`tab-btn ${activeTab === 'validation' ? 'active' : ''}`}
+            onClick={() => setActiveTab('validation')}
+          >
+            Validation Report
+          </button>
 
           <div className="panel-tab-actions">
             <button className="btn btn-secondary btn-sm" onClick={downloadReportFile}>
@@ -280,7 +286,7 @@ _Note: Double check all functions and trigger behaviors before deploying to prod
                 </div>
               )}
             </div>
-          ) : (
+          ) : activeTab === 'sql' ? (
             <div className="sql-tab">
               <div className="sql-preview-header">
                 <span>Ordered T-SQL Output Script</span>
@@ -294,6 +300,74 @@ _Note: Double check all functions and trigger behaviors before deploying to prod
               </div>
               <div className="sql-preview-box">
                 <pre><code>{reportData.combinedSql}</code></pre>
+              </div>
+            </div>
+          ) : (
+            <div className="validation-tab" style={{ padding: '0.5rem 0' }}>
+              <div className="section-header" style={{ marginBottom: '1.5rem' }}>
+                <h3 style={{ margin: '0 0 0.4rem 0', fontSize: '1.2rem', fontWeight: '800' }}>Post-Conversion Validation Report</h3>
+                <p style={{ margin: 0, fontSize: '0.88rem', color: 'var(--text-secondary)' }}>The schema validation engine scanned the converted T-SQL code for compiler compatibility, broken references, data types, and PG-specific leaks.</p>
+              </div>
+              
+              <div className="validation-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
+                <div className="validation-card glass-panel" style={{ padding: '1rem', borderLeft: '4px solid var(--success)', borderRadius: 'var(--radius-sm)' }}>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Passed Checks</span>
+                  <div style={{ fontSize: '1.75rem', fontWeight: '800', margin: '0.25rem 0' }}>{validationReport?.successes.length || 0}</div>
+                </div>
+                <div className="validation-card glass-panel" style={{ padding: '1rem', borderLeft: '4px solid var(--warning)', borderRadius: 'var(--radius-sm)' }}>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Syntax Warnings</span>
+                  <div style={{ fontSize: '1.75rem', fontWeight: '800', margin: '0.25rem 0' }}>{validationReport?.warnings.length || 0}</div>
+                </div>
+                <div className="validation-card glass-panel" style={{ padding: '1rem', borderLeft: '4px solid var(--error)', borderRadius: 'var(--radius-sm)' }}>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Syntax Errors</span>
+                  <div style={{ fontSize: '1.75rem', fontWeight: '800', margin: '0.25rem 0' }}>{validationReport?.errors.length || 0}</div>
+                </div>
+                <div className="validation-card glass-panel" style={{ padding: '1rem', borderLeft: '4px solid #818cf8', borderRadius: 'var(--radius-sm)' }}>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Manual Review Items</span>
+                  <div style={{ fontSize: '1.75rem', fontWeight: '800', margin: '0.25rem 0' }}>{validationReport?.manualFixes.length || 0}</div>
+                </div>
+              </div>
+
+              <div className="validation-list" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                {validationReport?.errors.map((err, i) => (
+                  <div key={`err-${i}`} className="validation-item error-item glass-panel" style={{ padding: '1rem', border: '1px solid var(--error-border)', background: 'rgba(239, 68, 68, 0.05)', display: 'flex', gap: '0.75rem', alignItems: 'flex-start', borderRadius: 'var(--radius-md)' }}>
+                    <div style={{ background: 'var(--error)', color: '#fff', borderRadius: '50%', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 'bold', flexShrink: 0 }}>X</div>
+                    <div>
+                      <strong style={{ display: 'block', fontSize: '0.9rem', marginBottom: '0.2rem' }}>{err.objectName}</strong>
+                      <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{err.description}</p>
+                    </div>
+                  </div>
+                ))}
+
+                {validationReport?.warnings.map((warn, i) => (
+                  <div key={`warn-${i}`} className="validation-item warn-item glass-panel" style={{ padding: '1rem', border: '1px solid var(--warning-border)', background: 'rgba(245, 158, 11, 0.05)', display: 'flex', gap: '0.75rem', alignItems: 'flex-start', borderRadius: 'var(--radius-md)' }}>
+                    <div style={{ background: 'var(--warning)', color: '#fff', borderRadius: '50%', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 'bold', flexShrink: 0 }}>!</div>
+                    <div>
+                      <strong style={{ display: 'block', fontSize: '0.9rem', marginBottom: '0.2rem' }}>{warn.objectName}</strong>
+                      <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{warn.description}</p>
+                    </div>
+                  </div>
+                ))}
+
+                {validationReport?.manualFixes.map((fix, i) => (
+                  <div key={`fix-${i}`} className="validation-item fix-item glass-panel" style={{ padding: '1rem', border: '1px solid #818cf8', background: 'rgba(129, 140, 248, 0.05)', display: 'flex', gap: '0.75rem', alignItems: 'flex-start', borderRadius: 'var(--radius-md)' }}>
+                    <div style={{ background: '#818cf8', color: '#fff', borderRadius: '50%', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 'bold', flexShrink: 0 }}>?</div>
+                    <div>
+                      <strong style={{ display: 'block', fontSize: '0.9rem', marginBottom: '0.2rem' }}>{fix.objectName}</strong>
+                      <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{fix.description}</p>
+                    </div>
+                  </div>
+                ))}
+
+                {(!validationReport || (validationReport.errors.length === 0 && validationReport.warnings.length === 0 && validationReport.manualFixes.length === 0)) && (
+                  <div className="success-banner" style={{ display: 'flex', gap: '1rem', padding: '1.5rem', background: 'rgba(16, 185, 129, 0.05)', border: '1px solid var(--success-border)', borderRadius: 'var(--radius-md)', alignItems: 'center' }}>
+                    <div style={{ fontSize: '2rem' }}>🎉</div>
+                    <div>
+                      <h4 style={{ margin: 0, fontSize: '1rem', fontWeight: 'bold' }}>All Validation Scans Passed!</h4>
+                      <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Your T-SQL scripts did not trigger any structural index, type, reference, or parentheses errors.</p>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}

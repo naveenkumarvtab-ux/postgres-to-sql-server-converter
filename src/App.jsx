@@ -10,6 +10,7 @@ import { supabase } from './utils/supabaseClient';
 import { splitSqlStatements, classifyStatement } from './utils/parser';
 import { translateObject, resolveDependencies } from './utils/translator';
 import { translatePLpgSQLWithAI } from './utils/gemini';
+import { validateMigration } from './utils/validator';
 
 export default function App() {
   const [step, setStep] = useState('upload'); // upload | workspace | summary
@@ -23,6 +24,24 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [isResettingPassword, setIsResettingPassword] = useState(false);
   const [resetToken, setResetToken] = useState(null);
+  const [validationReport, setValidationReport] = useState(null);
+
+  useEffect(() => {
+    if (objects.length === 0) {
+      setValidationReport(null);
+      return;
+    }
+    const items = objects.map(o => ({
+      name: o.classified.name,
+      schema: o.classified.schema,
+      type: o.classified.type,
+      tsql: o.translation.tsql,
+      requiresAi: o.translation.requiresAi,
+      parsed: o.classified.parsed
+    }));
+    const report = validateMigration(items);
+    setValidationReport(report);
+  }, [objects]);
   const [theme, setTheme] = useState(() => {
     return localStorage.getItem('transpile_db_theme') || 'dark';
   });
@@ -420,6 +439,7 @@ export default function App() {
         {step === 'summary' && (
           <SummaryReport 
             objects={resolvedObjects} 
+            validationReport={validationReport}
             onReset={handleReset}
             onBackToWorkspace={() => setStep('workspace')}
           />
