@@ -1,4 +1,4 @@
-import { applySqlConversionRules, translateObject } from './src/utils/translator.js';
+import { applySqlConversionRules, translateObject, translatePgCron } from './src/utils/translator.js';
 import { classifyStatement } from './src/utils/parser.js';
 import { validateMigration } from './src/utils/validator.js';
 
@@ -117,6 +117,114 @@ const brokenDep = report.warnings.find(w => w.description.includes("Broken Depen
 assert(
   brokenDep !== undefined,
   'Validation Engine flags broken dependencies (missing nonexistent_table).'
+);
+
+// 6. CONCAT_WS Translation Tests
+const concatWsModern = applySqlConversionRules(
+  "SELECT CONCAT_WS(', ', first_name, last_name) FROM users;",
+  true,
+  { 'public': 'dbo' },
+  {},
+  '2017+'
+);
+assert(
+  concatWsModern.includes("CONCAT_WS(', ', first_name, last_name)"),
+  `CONCAT_WS modern version (2017+) preserves CONCAT_WS syntax. Result: "${concatWsModern}"`
+);
+
+const concatWsLegacy = applySqlConversionRules(
+  "SELECT CONCAT_WS(', ', first_name, last_name) FROM users;",
+  true,
+  { 'public': 'dbo' },
+  {},
+  '2016-'
+);
+assert(
+  concatWsLegacy.includes("STUFF(COALESCE(', ' + first_name, '') + COALESCE(', ' + last_name, ''), 1, 2, '')"),
+  `CONCAT_WS legacy version (2016-) simulates NULL-safe concat. Result: "${concatWsLegacy}"`
+);
+
+// 7. split_part() Translation Tests
+const splitPartLiteral = applySqlConversionRules(
+  "SELECT split_part(name, '-', 2) FROM users;",
+  true,
+  { 'public': 'dbo' }
+);
+assert(
+  splitPartLiteral.includes("COALESCE(CAST('<x>' + REPLACE(name, '-', '</x><x>') + '</x>' AS XML).value('/x[2][1]', 'NVARCHAR(MAX)'), '')"),
+  `split_part with literal index translates to XML value selection. Result: "${splitPartLiteral}"`
+);
+
+const splitPartColumn = applySqlConversionRules(
+  "SELECT split_part(name, '-', field_idx) FROM users;",
+  true,
+  { 'public': 'dbo' }
+);
+assert(
+  splitPartColumn.includes("COALESCE(CAST('<x>' + REPLACE(name, '-', '</x><x>') + '</x>' AS XML).value('/x[sql:column(\"field_idx\")][1]', 'NVARCHAR(MAX)'), '')"),
+  `split_part with column index translates to XML sql:column selection. Result: "${splitPartColumn}"`
+);
+
+// 8. Hyphenated and multi-word names tests
+const hyphenatedTable = classifyStatement('CREATE TABLE public."my-hyphenated-table" ("first name" VARCHAR(50));');
+const transHyphen = translateObject(hyphenatedTable, true, null, null, null, null, { 'public': 'dbo' });
+assert(
+  transHyphen.tsql.includes('[dbo].[my-hyphenated-table]') && transHyphen.tsql.includes('[first name]'),
+  `Hyphenated and multi-word names are properly wrapped in square brackets. Result: "${transHyphen.tsql}"`
+);
+
+// 9. pg_cron Job detection and SQL Agent conversion test
+const pgCronStmt = classifyStatement("SELECT cron.schedule('nightly_clean', '0 2 * * *', 'CALL public.cleanup_logs()');");
+assert(
+  pgCronStmt.type === 'PG_CRON',
+  `pg_cron statement successfully classified as PG_CRON. Type: "${pgCronStmt.type}"`
+);
+
+const transCron = translatePgCron(pgCronStmt.raw);
+assert(
+  transCron.includes("Suggested SQL Server Agent Job") && transCron.includes("job_name = N'nightly_clean'") && transCron.includes("database_name = N'current_database'"),
+  `pg_cron job maps to SQL Server Agent step template. Result: "${transCron}"`
+);
+
+// 10. Standalone CALL Statement preservation
+const rawCall = "CALL public.sp_my_proc(1, 'ABC');";
+const classifiedCall = classifyStatement(rawCall);
+assert(
+  classifiedCall.type === 'CALL',
+  `Standalone CALL statement classified as type 'CALL'. Type: "${classifiedCall.type}"`
+);
+
+const translatedCall = translateObject(classifiedCall, true, null, null, null, null, { 'public': 'dbo' });
+assert(
+  translatedCall.tsql.trim().includes("EXEC [dbo].[sp_my_proc] @Param1=1, @Param2='ABC';"),
+  `Standalone CALL translated to executable EXEC query. Result: "${translatedCall.tsql}"`
+);
+
+// 11. NULL-handling validation warnings
+const mockNullObjects = [
+  {
+    schema: 'dbo',
+    name: 'test_concats',
+    type: 'VIEW',
+    tsql: "CREATE VIEW test_concats AS SELECT a + ' ' + b FROM test;"
+  },
+  {
+    schema: 'dbo',
+    name: 'test_legacy',
+    type: 'VIEW',
+    tsql: "CREATE VIEW test_legacy AS SELECT STUFF(COALESCE(', ' + a, ''), 1, 2, '') FROM test;"
+  }
+];
+const nullReport = validateMigration(mockNullObjects);
+const hasNullWarning = nullReport.warnings.find(w => w.description.includes("NULL-Handling Warning"));
+assert(
+  hasNullWarning !== undefined,
+  "Validation Engine detects and warns about potential NULL-handling changes on T-SQL '+' concatenation."
+);
+const hasStuffInfo = nullReport.warnings.find(w => w.description.includes("NULL-Handling Info: CONCAT_WS"));
+assert(
+  hasStuffInfo !== undefined,
+  "Validation Engine flags old-compatibility CONCAT_WS (STUFF/COALESCE) translations."
 );
 
 if (failed > 0) {

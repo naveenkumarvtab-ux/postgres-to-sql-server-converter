@@ -76,6 +76,21 @@ export function validateMigration(translatedObjects) {
       });
     }
 
+    // NULL-handling check for T-SQL string concatenation
+    if (/\+/.test(cleanTsql) && obj.type !== 'DATA') {
+      report.warnings.push({
+        objectName: objLabel,
+        description: `NULL-Handling Warning: String concatenation using '+' evaluates to NULL if any operand is NULL. Consider using CONCAT() or wrapping operands in COALESCE/ISNULL.`
+      });
+    }
+
+    if (/STUFF\s*\(\s*COALESCE/i.test(cleanTsql)) {
+      report.warnings.push({
+        objectName: objLabel,
+        description: `NULL-Handling Info: CONCAT_WS was simulated using STUFF and COALESCE to ignore NULL values on an older SQL Server target. Verify correctness under empty string vs NULL separators.`
+      });
+    }
+
     if (/\bnow\(\)/i.test(cleanTsql)) {
       report.warnings.push({
         objectName: objLabel,
@@ -100,7 +115,14 @@ export function validateMigration(translatedObjects) {
     if (/\bsplit_part\s*\(/i.test(cleanTsql)) {
       report.manualFixes.push({
         objectName: objLabel,
-        description: `PG function 'split_part' needs rewrite. SQL Server does not have a direct split_part function; use STRING_SPLIT or custom split function.`
+        description: `Leaked PG function 'split_part' needs manual rewrite to T-SQL.`
+      });
+    }
+
+    if (/CAST\s*\(.*?\s+AS\s+XML\)\.value\('/i.test(cleanTsql)) {
+      report.warnings.push({
+        objectName: objLabel,
+        description: `Info: PostgreSQL split_part() function was simulated in T-SQL via XML casting. Check correctness and index performance.`
       });
     }
 

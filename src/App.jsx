@@ -153,7 +153,8 @@ export default function App() {
       apiKey: '',
       useUnicode: true,
       model: 'gemini-3.1-flash-lite',
-      deploymentMode: 'migration'
+      deploymentMode: 'migration',
+      sqlServerVersion: '2017+'
     };
   });
 
@@ -167,7 +168,7 @@ export default function App() {
       const updated = { ...prev, ...newSettings };
       
       // Dynamic re-translation on settings change
-      if (rawClassified.length > 0 && (newSettings.useUnicode !== undefined || newSettings.deploymentMode !== undefined)) {
+      if (rawClassified.length > 0 && (newSettings.useUnicode !== undefined || newSettings.deploymentMode !== undefined || newSettings.sqlServerVersion !== undefined)) {
         const tableColumnsMap = {};
         rawClassified.forEach(obj => {
           if (obj.type === 'TABLE' && obj.parsed && obj.parsed.columns) {
@@ -220,7 +221,8 @@ export default function App() {
             compositesMap,
             { 'public': 'dbo' },
             tableColumnsMap,
-            updated.deploymentMode || 'migration'
+            updated.deploymentMode || 'migration',
+            updated.sqlServerVersion || '2017+'
           );
           return {
             classified,
@@ -320,7 +322,8 @@ export default function App() {
         compositesMap,
         { 'public': 'dbo' },
         tableColumnsMap,
-        settings.deploymentMode || 'migration'
+        settings.deploymentMode || 'migration',
+        settings.sqlServerVersion || '2017+'
       );
       return {
         classified,

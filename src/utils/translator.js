@@ -499,7 +499,7 @@ export function translateTableConstraint(constraintText, warnings = null) {
  * Automagically translates classified objects into T-SQL.
  * PL/pgSQL objects will be returned with a tag indicating they require AI translation.
  */
-export function translateObject(obj, useUnicode = true, metadata = null, enums = null, domains = null, composites = null, schemaMap = { 'public': 'dbo' }, tableColumnsMap = {}, deploymentMode = 'migration') {
+export function translateObject(obj, useUnicode = true, metadata = null, enums = null, domains = null, composites = null, schemaMap = { 'public': 'dbo' }, tableColumnsMap = {}, deploymentMode = 'migration', sqlServerVersion = '2017+') {
   const result = {
     tsql: '',
     warnings: [],
@@ -756,6 +756,18 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
       break;
     }
 
+    case 'CALL': {
+      // Standalone CALL statements are translated to EXEC statements
+      result.tsql = obj.raw;
+      break;
+    }
+
+    case 'PG_CRON': {
+      // Handle pg_cron schedule definitions
+      result.tsql = translatePgCron(obj.raw);
+      break;
+    }
+
     default: {
       // Keep other unrecognized lines as commented references
       result.tsql = `/* UNRECOGNIZED STATEMENT:\n${obj.raw}\n*/`;
@@ -764,13 +776,72 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
   }
 
   // Apply standard SQL conversion rules to clean up T-SQL output
-  result.tsql = applySqlConversionRules(result.tsql, useUnicode, schemaMap, tableColumnsMap);
+  result.tsql = applySqlConversionRules(result.tsql, useUnicode, schemaMap, tableColumnsMap, sqlServerVersion);
 
   // Validate generated SQL Server syntax before returning
   const tsqlValWarnings = validateTsql(result.tsql, obj.type, `${obj.schema}.${obj.name}`);
   result.warnings.push(...tsqlValWarnings);
 
   return result;
+}
+
+export function translatePgCron(rawSql) {
+  const scheduleMatch = rawSql.match(/cron\.schedule(?:_in_database)?\s*\((.*)\)/i);
+  if (!scheduleMatch) {
+    return `-- PostgreSQL pg_cron schedule detected.\n-- Recommended: Migrate this to a SQL Server Agent Job.\n-- Original Statement:\n-- ${rawSql}`;
+  }
+  
+  const argsText = scheduleMatch[1];
+  const args = splitParenthesesArguments(argsText).map(a => a.trim().replace(/^'|'$/g, '')); // strip quotes
+  
+  let jobName = 'pg_cron_job';
+  let cronExpr = '';
+  let command = '';
+  let database = 'current_database';
+  
+  if (args.length === 2) {
+    cronExpr = args[0];
+    command = args[1];
+  } else if (args.length === 3) {
+    jobName = args[0];
+    cronExpr = args[1];
+    command = args[2];
+  } else if (args.length === 4) {
+    jobName = args[0];
+    cronExpr = args[1];
+    command = args[2];
+    database = args[3];
+  }
+  
+  // Translate cron expression to human readable SQL Server Agent Schedule terms
+  let scheduleDesc = `Cron Schedule: "${cronExpr}"`;
+  const cronParts = cronExpr.trim().split(/\s+/);
+  if (cronParts.length >= 5) {
+    const [min, hr, dom, mon, dow] = cronParts;
+    if (min === '0' && hr === '0' && dom === '*' && mon === '*' && dow === '*') {
+      scheduleDesc = 'Daily at Midnight (12:00 AM)';
+    } else if (min === '*/5' && hr === '*' && dom === '*' && mon === '*' && dow === '*') {
+      scheduleDesc = 'Every 5 Minutes';
+    } else if (dom === '*' && mon === '*' && dow === '*') {
+      scheduleDesc = `Daily at ${hr.padStart(2, '0')}:${min.padStart(2, '0')}`;
+    }
+  }
+  
+  return `-- =========================================================================\n` +
+         `-- 📅 MIGRATION NOTE: PostgreSQL pg_cron Job detected.\n` +
+         `-- SQL Server equivalent is a SQL Server Agent Job.\n` +
+         `-- \n` +
+         `-- Suggested SQL Server Agent Job details:\n` +
+         `--   * Job Name: ${jobName}\n` +
+         `--   * Target Database: ${database}\n` +
+         `--   * Schedule: ${scheduleDesc}\n` +
+         `--   * Executable SQL command:\n` +
+         `-- =========================================================================\n` +
+         `/*\n` +
+         `EXEC msdb.dbo.sp_add_job @job_name = N'${jobName}';\n` +
+         `EXEC msdb.dbo.sp_add_jobstep @job_name = N'${jobName}', @step_name = N'Execute Task', @database_name = N'${database}', @command = N'${command}';\n` +
+         `*/\n` +
+         `GO`;
 }
 
 /**
@@ -1111,12 +1182,12 @@ export function translateAge(exprStr) {
 }
 
 export function translateCall(procedureName, argsStr, schemaMap = { 'public': 'dbo' }) {
-  const parts = procedureName.split('.');
+  const cleanParts = procedureName.split('.').map(p => p.replace(/[\[\]]/g, '').trim());
   let schema = 'dbo';
-  let name = procedureName;
-  if (parts.length > 1) {
-    schema = schemaMap[parts[0].trim()] || parts[0].trim();
-    name = parts[1].trim();
+  let name = procedureName.replace(/[\[\]]/g, '').trim();
+  if (cleanParts.length > 1) {
+    schema = schemaMap[cleanParts[0]] || cleanParts[0];
+    name = cleanParts[1];
   }
   const args = splitParenthesesArguments(argsStr);
   if (args.length === 0 || (args.length === 1 && args[0].trim() === '')) {
@@ -1149,15 +1220,15 @@ export function translateIntervals(sql) {
   return clean;
 }
 
-export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'public': 'dbo' }, tableColumnsMap = {}) {
+export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'public': 'dbo' }, tableColumnsMap = {}, sqlServerVersion = '2017+') {
   let clean = sql;
 
   // 1. Schema Mapping (e.g. [public].tableName or public.tableName or public.functionName)
   for (const [oldSchema, newSchema] of Object.entries(schemaMap)) {
-    const regex1 = new RegExp(`\\[${oldSchema}\\]\\.\\[([a-zA-Z0-9_]+)\\]`, 'gi');
+    const regex1 = new RegExp(`\\[${oldSchema}\\]\\.\\[([a-zA-Z0-9_\\-]+)\\]`, 'gi');
     clean = clean.replace(regex1, `[${newSchema}].[$1]`);
     
-    const regex2 = new RegExp(`\\b${oldSchema}\\.([a-zA-Z0-9_]+)\\b`, 'gi');
+    const regex2 = new RegExp(`\\b${oldSchema}\\.([a-zA-Z0-9_\\-]+)\\b`, 'gi');
     clean = clean.replace(regex2, `[${newSchema}].[$1]`);
   }
 
@@ -1168,14 +1239,14 @@ export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'p
   // 3. EOMONTH + interval year subtraction
   const dateTruncEomonthRegex = /DATE_TRUNC\s*\(\s*'month'\s*,\s*([a-zA-Z0-9_\.\(\)\[\]'""\s+\-*\/]+?)\s*\)\s*-\s*interval\s+'1\s+day'/gi;
   clean = clean.replace(dateTruncEomonthRegex, (match, expr) => {
-    const translatedExpr = applySqlConversionRules(expr, useUnicode, schemaMap, tableColumnsMap);
+    const translatedExpr = applySqlConversionRules(expr, useUnicode, schemaMap, tableColumnsMap, sqlServerVersion);
     return `EOMONTH(${translatedExpr}, -1)`;
   });
 
   // 4. DATE_TRUNC mapping
   const dateTruncRegex = /DATE_TRUNC\s*\(\s*'(\w+)'\s*,\s*(.*?)\s*\)/gi;
   clean = clean.replace(dateTruncRegex, (match, unit, expr) => {
-    const translatedExpr = applySqlConversionRules(expr, useUnicode, schemaMap, tableColumnsMap);
+    const translatedExpr = applySqlConversionRules(expr, useUnicode, schemaMap, tableColumnsMap, sqlServerVersion);
     const u = unit.toLowerCase();
     if (u === 'year') {
       return `DATEADD(year, DATEDIFF(year, 0, ${translatedExpr}), 0)`;
@@ -1262,8 +1333,87 @@ export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'p
     ageIdx = clean.toUpperCase().indexOf('AGE(', ageIdx + 4);
   }
 
+  // 7.5 CONCAT_WS mapping
+  let concatWsIdx = clean.toUpperCase().indexOf('CONCAT_WS(');
+  while (concatWsIdx !== -1) {
+    const startParen = concatWsIdx + 9;
+    let level = 1;
+    let endParen = -1;
+    for (let i = startParen + 1; i < clean.length; i++) {
+      if (clean[i] === '(') level++;
+      if (clean[i] === ')') {
+        level--;
+        if (level === 0) {
+          endParen = i;
+          break;
+        }
+      }
+    }
+    if (endParen !== -1) {
+      const body = clean.substring(startParen + 1, endParen);
+      const args = splitParenthesesArguments(body);
+      if (args.length >= 2) {
+        const sep = args[0].trim();
+        const concatArgs = args.slice(1).map(a => a.trim());
+        let replacement = '';
+        if (sqlServerVersion === '2017+') {
+          replacement = `CONCAT_WS(${sep}, ${concatArgs.join(', ')})`;
+        } else {
+          const coalesces = concatArgs.map(arg => `COALESCE(${sep} + ${arg}, '')`).join(' + ');
+          let sepLen = `LEN(${sep})`;
+          if (sep.startsWith("'") && sep.endsWith("'")) {
+            sepLen = (sep.length - 2).toString();
+          }
+          replacement = `STUFF(${coalesces}, 1, ${sepLen}, '')`;
+        }
+        clean = clean.substring(0, concatWsIdx) + replacement + clean.substring(endParen + 1);
+      }
+    }
+    concatWsIdx = clean.toUpperCase().indexOf('CONCAT_WS(', concatWsIdx + 10);
+  }
+
+  // 7.6 split_part mapping
+  let splitPartIdx = clean.toUpperCase().indexOf('SPLIT_PART(');
+  while (splitPartIdx !== -1) {
+    const startParen = splitPartIdx + 10;
+    let level = 1;
+    let endParen = -1;
+    for (let i = startParen + 1; i < clean.length; i++) {
+      if (clean[i] === '(') level++;
+      if (clean[i] === ')') {
+        level--;
+        if (level === 0) {
+          endParen = i;
+          break;
+        }
+      }
+    }
+    if (endParen !== -1) {
+      const body = clean.substring(startParen + 1, endParen);
+      const args = splitParenthesesArguments(body);
+      if (args.length === 3) {
+        const str = args[0].trim();
+        const delim = args[1].trim();
+        const fld = args[2].trim();
+        
+        const isInteger = /^\d+$/.test(fld);
+        let xpathIndex = fld;
+        if (!isInteger) {
+          if (fld.startsWith('@')) {
+            xpathIndex = `sql:variable("${fld}")`;
+          } else {
+            xpathIndex = `sql:column("${fld}")`;
+          }
+        }
+        const translated = `COALESCE(CAST('<x>' + REPLACE(${str}, ${delim}, '</x><x>') + '</x>' AS XML).value('/x[${xpathIndex}][1]', 'NVARCHAR(MAX)'), '')`;
+        clean = clean.substring(0, splitPartIdx) + translated + clean.substring(endParen + 1);
+      }
+    }
+    splitPartIdx = clean.toUpperCase().indexOf('SPLIT_PART(', splitPartIdx + 11);
+  }
+
   // 8. CALL mapping
-  const callRegex = /\bCALL\s+([a-zA-Z0-9_\.]+)\s*\((.*?)\)\s*;?/gi;
+  const callRegex = /\bCALL\s+([a-zA-Z0-9_\.\[\]]+)\s*\((.*?)\)\s*;?/gi;
   clean = clean.replace(callRegex, (match, procName, argsStr) => {
     return translateCall(procName, argsStr, schemaMap);
   });

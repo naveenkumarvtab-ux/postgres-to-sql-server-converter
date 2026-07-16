@@ -165,6 +165,22 @@ export default function SettingsPanel({ isOpen, onClose, settings, onUpdateSetti
                 Migration Mode drops and recreates tables/indexes. Deployment Mode skips creating them if they already exist.
               </span>
             </div>
+
+            <div className="input-group" style={{ marginTop: '1rem' }}>
+              <label htmlFor="sql-server-version">SQL Server Version</label>
+              <select
+                id="sql-server-version"
+                className="input-control"
+                value={settings.sqlServerVersion || '2017+'}
+                onChange={(e) => onUpdateSettings({ sqlServerVersion: e.target.value })}
+              >
+                <option value="2017+">SQL Server 2017 / 2019 / 2022 / Azure SQL (Supports CONCAT_WS)</option>
+                <option value="2016-">SQL Server 2016 or Older (Simulates CONCAT_WS via STUFF/COALESCE)</option>
+              </select>
+              <span className="helper-text" style={{ display: 'block', marginTop: '0.25rem', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                Determines compatibility for advanced built-in functions.
+              </span>
+            </div>
           </div>
 
           {user && (

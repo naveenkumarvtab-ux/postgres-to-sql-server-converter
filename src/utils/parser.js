@@ -543,6 +543,25 @@ export function classifyStatement(rawSql) {
     return obj;
   }
 
+  // 9.5 pg_cron Schedule check
+  if (upperSql.includes('CRON.SCHEDULE') || upperSql.includes('CRON.SCHEDULE_IN_DATABASE')) {
+    obj.type = 'PG_CRON';
+    obj.name = 'pg_cron_job';
+    return obj;
+  }
+
+  // 9.6 Standalone CALL Procedure
+  if (upperSql.startsWith('CALL ')) {
+    obj.type = 'CALL';
+    const match = cleanSql.match(/CALL\s+([^\s;(]+)/i);
+    if (match) {
+      const qname = parseSchemaQualifiedName(match[1]);
+      obj.name = qname.name;
+      obj.schema = qname.schema;
+    }
+    return obj;
+  }
+
   // 10. Standalone SELECT / WITH
   if (upperSql.startsWith('SELECT ') || upperSql.startsWith('WITH ')) {
     obj.type = 'SELECT';
