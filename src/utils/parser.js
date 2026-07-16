@@ -543,6 +543,13 @@ export function classifyStatement(rawSql) {
     return obj;
   }
 
+  // 10. Standalone SELECT / WITH
+  if (upperSql.startsWith('SELECT ') || upperSql.startsWith('WITH ')) {
+    obj.type = 'SELECT';
+    obj.name = 'standalone_select';
+    return obj;
+  }
+
   return obj;
 }
 

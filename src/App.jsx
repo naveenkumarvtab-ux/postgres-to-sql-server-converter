@@ -16,6 +16,7 @@ export default function App() {
   const [step, setStep] = useState('upload'); // upload | workspace | summary
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [objects, setObjects] = useState([]);
+  const [rawClassified, setRawClassified] = useState([]);
   const [isTranslatingMap, setIsTranslatingMap] = useState({});
   const [metadata, setMetadata] = useState(null);
   const [isBulkTranslating, setIsBulkTranslating] = useState(false);
@@ -151,7 +152,8 @@ export default function App() {
     return {
       apiKey: '',
       useUnicode: true,
-      model: 'gemini-3.1-flash-lite'
+      model: 'gemini-3.1-flash-lite',
+      deploymentMode: 'migration'
     };
   });
 
@@ -161,10 +163,75 @@ export default function App() {
   }, [settings]);
 
   const handleUpdateSettings = (newSettings) => {
-    setSettings(prev => ({
-      ...prev,
-      ...newSettings
-    }));
+    setSettings(prev => {
+      const updated = { ...prev, ...newSettings };
+      
+      // Dynamic re-translation on settings change
+      if (rawClassified.length > 0 && (newSettings.useUnicode !== undefined || newSettings.deploymentMode !== undefined)) {
+        const tableColumnsMap = {};
+        rawClassified.forEach(obj => {
+          if (obj.type === 'TABLE' && obj.parsed && obj.parsed.columns) {
+            const key = `${obj.schema}.${obj.name}`.toLowerCase();
+            tableColumnsMap[key] = obj.parsed.columns.map(c => c.name);
+          }
+        });
+        if (metadata) {
+          if (Array.isArray(metadata)) {
+            metadata.forEach(item => {
+              const tbl = item.table || item.tableName || item.table_name;
+              const col = item.column || item.columnName || item.column_name;
+              if (tbl && col) {
+                const key = tbl.toLowerCase();
+                if (!tableColumnsMap[key]) tableColumnsMap[key] = [];
+                if (!tableColumnsMap[key].includes(col)) {
+                  tableColumnsMap[key].push(col);
+                }
+              }
+            });
+          }
+        }
+
+        const enumsMap = {};
+        const domainsMap = {};
+        const compositesMap = {};
+        rawClassified.forEach(obj => {
+          if (obj.type === 'ENUM') enumsMap[obj.name.toLowerCase()] = obj.parsed.values;
+          if (obj.type === 'DOMAIN') {
+            domainsMap[obj.name.toLowerCase()] = obj.parsed;
+            domainsMap[`${obj.schema.toLowerCase()}.${obj.name.toLowerCase()}`] = obj.parsed;
+          }
+          if (obj.type === 'COMPOSITE') {
+            compositesMap[obj.name.toLowerCase()] = obj.parsed.fields;
+            compositesMap[`${obj.schema.toLowerCase()}.${obj.name.toLowerCase()}`] = obj.parsed.fields;
+          }
+        });
+
+        const newObjects = rawClassified.map(classified => {
+          const existing = objects.find(o => o.classified.id === classified.id);
+          if (existing && existing.translation && !existing.translation.requiresAi && existing.translation.tsql && !existing.translation.tsql.includes('PENDING AI TRANSLATION')) {
+            return existing;
+          }
+          const translation = translateObject(
+            classified, 
+            updated.useUnicode, 
+            metadata, 
+            enumsMap, 
+            domainsMap, 
+            compositesMap,
+            { 'public': 'dbo' },
+            tableColumnsMap,
+            updated.deploymentMode || 'migration'
+          );
+          return {
+            classified,
+            translation
+          };
+        });
+        setObjects(newObjects);
+      }
+      
+      return updated;
+    });
   };
 
   const handleFilesUploaded = (sqlContent, fileName, uploadedMetadata) => {
@@ -215,9 +282,46 @@ export default function App() {
       }
     });
 
+    setRawClassified(classifiedStatements);
+
+    // Gather all columns map from parsed tables
+    const tableColumnsMap = {};
+    classifiedStatements.forEach(obj => {
+      if (obj.type === 'TABLE' && obj.parsed && obj.parsed.columns) {
+        const key = `${obj.schema}.${obj.name}`.toLowerCase();
+        tableColumnsMap[key] = obj.parsed.columns.map(c => c.name);
+      }
+    });
+
+    if (uploadedMetadata) {
+      if (Array.isArray(uploadedMetadata)) {
+        uploadedMetadata.forEach(item => {
+          const tbl = item.table || item.tableName || item.table_name;
+          const col = item.column || item.columnName || item.column_name;
+          if (tbl && col) {
+            const key = tbl.toLowerCase();
+            if (!tableColumnsMap[key]) tableColumnsMap[key] = [];
+            if (!tableColumnsMap[key].includes(col)) {
+              tableColumnsMap[key].push(col);
+            }
+          }
+        });
+      }
+    }
+
     // 3. Second pass: translate statements passing the enums context
     const processedObjects = classifiedStatements.map(classified => {
-      const translation = translateObject(classified, settings.useUnicode, uploadedMetadata, enumsMap, domainsMap, compositesMap);
+      const translation = translateObject(
+        classified, 
+        settings.useUnicode, 
+        uploadedMetadata, 
+        enumsMap, 
+        domainsMap, 
+        compositesMap,
+        { 'public': 'dbo' },
+        tableColumnsMap,
+        settings.deploymentMode || 'migration'
+      );
       return {
         classified,
         translation

@@ -104,6 +104,38 @@ export function validateMigration(translatedObjects) {
       });
     }
 
+    // 2.5 Scan for leaked placeholder columns (e.g. Column1, Column2, ColumnN)
+    const leakedPlaceholders = cleanTsql.match(/\bColumn\d+\b/i);
+    if (leakedPlaceholders) {
+      report.errors.push({
+        objectName: objLabel,
+        description: `Leaked placeholder column name '${leakedPlaceholders[0]}' detected. SQL Server schemas must use real column names; please verify view/table definitions.`
+      });
+      hasCriticalError = true;
+    }
+
+    // 2.6 Unsupported PostgreSQL features
+    if (/\bregexp_replace\s*\(/i.test(cleanTsql)) {
+      report.manualFixes.push({
+        objectName: objLabel,
+        description: `Unsupported PG function 'regexp_replace' found. SQL Server does not have native regex replace; consider CLR or master.dbo.xp_sprintf.`
+      });
+    }
+
+    if (/\bstring_to_array\s*\(/i.test(cleanTsql) || /\barray_to_string\s*\(/i.test(cleanTsql)) {
+      report.manualFixes.push({
+        objectName: objLabel,
+        description: `Unsupported PG array function 'string_to_array'/'array_to_string' found. SQL Server has no native array types; consider STRING_SPLIT / STRING_AGG.`
+      });
+    }
+
+    if (/\[\d+\]/.test(cleanTsql) && obj.type !== 'DATA') {
+      report.warnings.push({
+        objectName: objLabel,
+        description: `Detected array subscript access (e.g. col[1]). T-SQL does not support array index access. Consider mapping to JSON arrays (JSON_VALUE) instead.`
+      });
+    }
+
     // 3. Object Reference & Schema checks
     // Match FROM / JOIN / UPDATE / MERGE / INTO table references
     // e.g. FROM [dbo].[orders] or FROM orders or JOIN public.customers
@@ -144,7 +176,7 @@ export function validateMigration(translatedObjects) {
         if (!declaredObjects.has(refKey) && (refSchema === 'dbo' || refSchema === obj.schema.toLowerCase())) {
           report.warnings.push({
             objectName: objLabel,
-            description: `Referenced object '${fullRef}' could not be resolved inside the active migration schema.`
+            description: `Broken Dependency / Missing Object: Referenced object '${fullRef}' is missing or could not be resolved in the active migration.`
           });
         }
       }

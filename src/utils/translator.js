@@ -499,7 +499,7 @@ export function translateTableConstraint(constraintText, warnings = null) {
  * Automagically translates classified objects into T-SQL.
  * PL/pgSQL objects will be returned with a tag indicating they require AI translation.
  */
-export function translateObject(obj, useUnicode = true, metadata = null, enums = null, domains = null, composites = null, schemaMap = { 'public': 'dbo' }) {
+export function translateObject(obj, useUnicode = true, metadata = null, enums = null, domains = null, composites = null, schemaMap = { 'public': 'dbo' }, tableColumnsMap = {}, deploymentMode = 'migration') {
   const result = {
     tsql: '',
     warnings: [],
@@ -520,7 +520,11 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
       const start = startMatch ? startMatch[1] : '1';
       const inc = incMatch ? incMatch[1] : '1';
       
-      result.tsql = `DROP SEQUENCE IF EXISTS [${obj.schema}].[${obj.name}];\nGO\nCREATE SEQUENCE [${obj.schema}].[${obj.name}]\n    START WITH ${start}\n    INCREMENT BY ${inc};\nGO`;
+      if (deploymentMode === 'deployment') {
+        result.tsql = `IF NOT EXISTS (SELECT * FROM sys.sequences WHERE object_id = OBJECT_ID(N'[${obj.schema}].[${obj.name}]'))\nBEGIN\n    CREATE SEQUENCE [${obj.schema}].[${obj.name}]\n        START WITH ${start}\n        INCREMENT BY ${inc};\nEND\nGO`;
+      } else {
+        result.tsql = `DROP SEQUENCE IF EXISTS [${obj.schema}].[${obj.name}];\nGO\nCREATE SEQUENCE [${obj.schema}].[${obj.name}]\n    START WITH ${start}\n    INCREMENT BY ${inc};\nGO`;
+      }
       break;
     }
 
@@ -571,7 +575,11 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
         }
       }
 
-      result.tsql = `DROP TABLE IF EXISTS [${obj.schema}].[${obj.name}];\nGO\nCREATE TABLE [${obj.schema}].[${obj.name}] (\n${colsTsql.join(',\n')}\n);\nGO`;
+      if (deploymentMode === 'deployment') {
+        result.tsql = `IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[${obj.schema}].[${obj.name}]') AND type in (N'U'))\nBEGIN\n    CREATE TABLE [${obj.schema}].[${obj.name}] (\n    ${colsTsql.join(',\n    ')}\n    );\nEND\nGO`;
+      } else {
+        result.tsql = `DROP TABLE IF EXISTS [${obj.schema}].[${obj.name}];\nGO\nCREATE TABLE [${obj.schema}].[${obj.name}] (\n${colsTsql.join(',\n')}\n);\nGO`;
+      }
       validateTableTsql(result.tsql, obj.name, result.warnings);
       break;
     }
@@ -588,7 +596,11 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
         if (!constraintEsc.trim().toUpperCase().startsWith('CONSTRAINT ')) {
           addClause = `CONSTRAINT [${obj.name}] ${constraintEsc}`;
         }
-        result.tsql = `ALTER TABLE ${tableNameEsc} DROP CONSTRAINT IF EXISTS [${obj.name}];\nGO\nALTER TABLE ${tableNameEsc} ADD ${addClause};\nGO`;
+        if (deploymentMode === 'deployment') {
+          result.tsql = `IF NOT EXISTS (SELECT * FROM sys.objects WHERE name = '${obj.name}' AND parent_object_id = OBJECT_ID('${tableNameEsc}'))\nBEGIN\n    ALTER TABLE ${tableNameEsc} ADD ${addClause};\nEND\nGO`;
+        } else {
+          result.tsql = `ALTER TABLE ${tableNameEsc} DROP CONSTRAINT IF EXISTS [${obj.name}];\nGO\nALTER TABLE ${tableNameEsc} ADD ${addClause};\nGO`;
+        }
       }
       break;
     }
@@ -670,7 +682,11 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
       }
 
       const altersTsql = computedColAlters.length > 0 ? computedColAlters.join('\n') + '\n' : '';
-      result.tsql = `${altersTsql}DROP INDEX IF EXISTS [${obj.name}] ON ${tblEsc};\nGO\nCREATE ${uniqueStr}INDEX [${obj.name}] ON ${tblEsc} (${indexCols.join(', ')})${filterStr};\nGO`;
+      if (deploymentMode === 'deployment') {
+        result.tsql = `${altersTsql}IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = '${obj.name}' AND object_id = OBJECT_ID('${tblEsc}'))\nBEGIN\n    CREATE ${uniqueStr}INDEX [${obj.name}] ON ${tblEsc} (${indexCols.join(', ')})${filterStr};\nEND\nGO`;
+      } else {
+        result.tsql = `${altersTsql}DROP INDEX IF EXISTS [${obj.name}] ON ${tblEsc};\nGO\nCREATE ${uniqueStr}INDEX [${obj.name}] ON ${tblEsc} (${indexCols.join(', ')})${filterStr};\nGO`;
+      }
       
       if (obj.parsed.using && obj.parsed.using.toLowerCase() !== 'btree') {
         result.warnings.push(`Index [${obj.name}] was originally defined USING ${obj.parsed.using}. This modifier was stripped because T-SQL only supports clustered/non-clustered index types directly.`);
@@ -734,6 +750,12 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
       break;
     }
 
+    case 'SELECT': {
+      // Standalone SELECT statements are preserved as executable SQL
+      result.tsql = obj.raw;
+      break;
+    }
+
     default: {
       // Keep other unrecognized lines as commented references
       result.tsql = `/* UNRECOGNIZED STATEMENT:\n${obj.raw}\n*/`;
@@ -742,7 +764,7 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
   }
 
   // Apply standard SQL conversion rules to clean up T-SQL output
-  result.tsql = applySqlConversionRules(result.tsql, useUnicode, schemaMap);
+  result.tsql = applySqlConversionRules(result.tsql, useUnicode, schemaMap, tableColumnsMap);
 
   // Validate generated SQL Server syntax before returning
   const tsqlValWarnings = validateTsql(result.tsql, obj.type, `${obj.schema}.${obj.name}`);
@@ -1127,7 +1149,7 @@ export function translateIntervals(sql) {
   return clean;
 }
 
-export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'public': 'dbo' }) {
+export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'public': 'dbo' }, tableColumnsMap = {}) {
   let clean = sql;
 
   // 1. Schema Mapping (e.g. [public].tableName or public.tableName or public.functionName)
@@ -1146,14 +1168,14 @@ export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'p
   // 3. EOMONTH + interval year subtraction
   const dateTruncEomonthRegex = /DATE_TRUNC\s*\(\s*'month'\s*,\s*([a-zA-Z0-9_\.\(\)\[\]'""\s+\-*\/]+?)\s*\)\s*-\s*interval\s+'1\s+day'/gi;
   clean = clean.replace(dateTruncEomonthRegex, (match, expr) => {
-    const translatedExpr = applySqlConversionRules(expr, useUnicode, schemaMap);
+    const translatedExpr = applySqlConversionRules(expr, useUnicode, schemaMap, tableColumnsMap);
     return `EOMONTH(${translatedExpr}, -1)`;
   });
 
   // 4. DATE_TRUNC mapping
   const dateTruncRegex = /DATE_TRUNC\s*\(\s*'(\w+)'\s*,\s*(.*?)\s*\)/gi;
   clean = clean.replace(dateTruncRegex, (match, unit, expr) => {
-    const translatedExpr = applySqlConversionRules(expr, useUnicode, schemaMap);
+    const translatedExpr = applySqlConversionRules(expr, useUnicode, schemaMap, tableColumnsMap);
     const u = unit.toLowerCase();
     if (u === 'year') {
       return `DATEADD(year, DATEDIFF(year, 0, ${translatedExpr}), 0)`;
@@ -1255,6 +1277,37 @@ export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'p
   clean = clean.replace(/\bCREATE\s+TEMP\s+TABLE\s+([a-zA-Z0-9_]+)/gi, 'CREATE TABLE #$1');
   clean = clean.replace(/\bCREATE\s+TEMPORARY\s+TABLE\s+([a-zA-Z0-9_]+)/gi, 'CREATE TABLE #$1');
 
+  // 11. Expand SELECT * using tableColumnsMap
+  clean = expandSelectStar(clean, tableColumnsMap);
+
+  return clean;
+}
+
+export function expandSelectStar(sql, tableColumnsMap = {}) {
+  let clean = sql;
+  const selectStarRegex = /\bSELECT\s+\*\s+FROM\s+([a-zA-Z0-9_\.\[\]]+)/gi;
+  clean = clean.replace(selectStarRegex, (match, tableNameRaw) => {
+    const cleanTable = tableNameRaw.replace(/[\[\]]/g, '').trim();
+    const parts = cleanTable.split('.');
+    const name = parts[parts.length - 1].toLowerCase();
+    
+    let columns = null;
+    for (const key of Object.keys(tableColumnsMap)) {
+      const keyParts = key.split('.');
+      const keyName = keyParts[keyParts.length - 1].toLowerCase();
+      if (keyName === name) {
+        columns = tableColumnsMap[key];
+        break;
+      }
+    }
+
+    if (columns && columns.length > 0) {
+      const escapedCols = columns.map(c => `[${c}]`).join(', ');
+      return `SELECT ${escapedCols} FROM ${tableNameRaw}`;
+    }
+    
+    return match;
+  });
   return clean;
 }
 
