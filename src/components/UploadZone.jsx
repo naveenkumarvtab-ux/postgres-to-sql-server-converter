@@ -7,6 +7,11 @@ export default function UploadZone({ onFilesUploaded }) {
   
   const sqlInputRef = useRef(null);
   const metaInputRef = useRef(null);
+  const dropzoneRef = useRef(null);
+
+  const scrollToDropzone = () => {
+    dropzoneRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
 
   const handleDrag = (e) => {
     e.preventDefault();
@@ -184,7 +189,7 @@ export default function UploadZone({ onFilesUploaded }) {
           <div className="phase-pills">
             <span className="phase-pill active">Phase 1: Capture & Upload</span>
             <span className="phase-pill">Phase 2: Analyze & Convert</span>
-            <span className="phase-pill">Phase 3: Validate & Export</span>
+            <span className="phase-pill">Phase 3: Validate & Deploy</span>
           </div>
         </div>
 
@@ -193,7 +198,7 @@ export default function UploadZone({ onFilesUploaded }) {
             <span className="step-circle">✓</span>
             <span className="step-text">Instructions</span>
           </div>
-          <div className="step-pill active">
+          <div className="step-pill active" onClick={scrollToDropzone} style={{ cursor: 'pointer' }}>
             <span className="step-circle">2</span>
             <span className="step-text">Upload files</span>
           </div>
@@ -204,8 +209,196 @@ export default function UploadZone({ onFilesUploaded }) {
         </div>
       </div>
 
+      {/* 📋 Preparation Instructions Header Section */}
+      <div className="prep-banner-card glass-panel">
+        <div className="prep-banner-info">
+          <span className="prep-banner-tag">BEFORE YOU UPLOAD</span>
+          <h2 className="prep-banner-title">Prepare a complete PostgreSQL migration package</h2>
+          <p className="prep-banner-desc">
+            A PostgreSQL schema DDL script (.sql) is the core input file. While the converter works end-to-end with a single script, uploading a JSON/CSV file containing table metadata enables advanced column expansion. Clean all credentials and passwords before uploading.
+          </p>
+        </div>
+        <button className="btn btn-primary prep-continue-btn" onClick={scrollToDropzone}>
+          Continue to Upload ➜
+        </button>
+      </div>
+
+      {/* 🛡️ Two Column: Extraction Modes & Security Preparation */}
+      <div className="prep-grid-columns">
+        {/* Left Column: Extraction Modes */}
+        <div className="prep-column-left glass-panel">
+          <h3 className="prep-column-title">
+            <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" strokeWidth="2.5" fill="none" style={{ marginRight: '0.4rem', verticalAlign: 'middle' }}>
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+              <line x1="9" y1="3" x2="9" y2="21" />
+            </svg>
+            Supported extraction modes
+          </h3>
+
+          <div className="mode-item">
+            <div className="mode-header">
+              <span className="mode-name">Mode A — DDL Script only</span>
+              <span className="mode-badge recommended">Recommended</span>
+            </div>
+            <p className="mode-desc">Upload the primary DDL script file containing table, view, constraint, and index definitions generated with pg_dump.</p>
+          </div>
+
+          <div className="mode-item">
+            <div className="mode-header">
+              <span className="mode-name">Mode B — DDL + Custom Types</span>
+              <span className="mode-badge supported">Supported</span>
+            </div>
+            <p className="mode-desc">Upload custom enum types, user domains, and composite types to map data constraints accurately.</p>
+          </div>
+
+          <div className="mode-item">
+            <div className="mode-header">
+              <span className="mode-name">Mode C — Metadata Mappings</span>
+              <span className="mode-badge supported">Supported</span>
+            </div>
+            <p className="mode-desc">Provide a list of tables and columns to automatically expand SELECT * wildcards to explicit columns.</p>
+          </div>
+        </div>
+
+        {/* Right Column: Security Prep */}
+        <div className="prep-column-right glass-panel">
+          <h3 className="prep-column-title">
+            <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" strokeWidth="2.5" fill="none" style={{ marginRight: '0.4rem', verticalAlign: 'middle' }}>
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+            </svg>
+            Security preparation
+          </h3>
+          
+          <div className="security-guidelines">
+            <p>Remove credentials, database connection strings, tokens, and personal user data before uploading. Replace secrets with placeholders such as <code>&lt;SQL_PASSWORD&gt;</code>.</p>
+            <p>Include table structures, data types, indexes, and constraints, but do not include insert data statements with sensitive client information.</p>
+            <p>Where trigger logic is used, include only the script definition needed for trigger compilation and mask custom user identifiers.</p>
+          </div>
+
+          <div className="security-alert-box">
+            <span className="alert-icon">⚠️</span>
+            <p className="alert-text">
+              Trigger functions and complex PL/pgSQL code blocks are isolated for AI translation, but they are processed client-side. No sensitive schema data is persisted on any server.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* 🎯 Scope-Dependent Requirements Banner */}
+      <div className="scope-banner-card">
+        <div className="scope-icon-wrapper">
+          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2.5" fill="none">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+          </svg>
+        </div>
+        <div className="scope-banner-meta">
+          <h4 className="scope-banner-title">Minimum input: one DDL script file</h4>
+          <p className="scope-banner-desc">
+            For structure migration, a single .sql schema dump file is sufficient. It is processed end-to-end for table structure, indexes, keys, functions, and views.
+          </p>
+        </div>
+      </div>
+
+      {/* 📂 Additional Files Grid */}
+      <div className="additional-section-header">
+        <span className="additional-section-sub">SCOPE-DEPENDENT REQUIREMENTS</span>
+        <h3 className="additional-section-title">
+          Additional inputs for advanced database migration analysis
+          <span className="additional-badge">3 requirement groups</span>
+        </h3>
+      </div>
+
+      <div className="additional-cards-grid">
+        {/* Card 1 */}
+        <div className="additional-card">
+          <div className="add-card-icon red">
+            <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2.5" fill="none">
+              <path d="M12 2L2 7l10 5 10-5-10-5z" />
+              <path d="M2 17l10 5 10-5" />
+              <path d="M2 12l10 5 10-5" />
+            </svg>
+          </div>
+          <h4>PostgreSQL DDL schema dump</h4>
+          <p className="add-card-code">
+            <code>table_definitions.sql</code> generated with <code>pg_dump --schema-only</code> containing constraints, indices, and tables.
+          </p>
+          <p className="add-card-desc">
+            This is the machine-readable source for tables, constraints, defaults, primary/foreign keys, schema layouts, and database properties.
+          </p>
+        </div>
+
+        {/* Card 2 */}
+        <div className="additional-card">
+          <div className="add-card-icon red">
+            <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2.5" fill="none">
+              <polyline points="16 18 22 12 16 6" />
+              <polyline points="8 6 2 12 8 18" />
+            </svg>
+          </div>
+          <h4>Procedural logic</h4>
+          <p className="add-card-code">
+            <code>functions.sql</code> containing trigger definitions and PL/pgSQL procedures.
+          </p>
+          <p className="add-card-desc">
+            Required to reconstruct trigger sequences, variables, conditional evaluations, loops, composite returns, and calculated fields.
+          </p>
+        </div>
+
+        {/* Card 3 */}
+        <div className="additional-card">
+          <div className="add-card-icon red">
+            <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2.5" fill="none">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+            </svg>
+          </div>
+          <h4>Column metadata map</h4>
+          <p className="add-card-code">
+            <code>table_metadata.csv</code> mapping table names and custom columns.
+          </p>
+          <p className="add-card-desc">
+            Required to identify exact column indices, resolve datatype conversions, specify target sizes, and manage null constraints.
+          </p>
+        </div>
+      </div>
+
+      {/* Recommended Lists */}
+      <div className="prep-lists-footer glass-panel">
+        <div className="list-col">
+          <h4 className="list-title">
+            <span className="list-check-dot green"></span>
+            Recommended files
+          </h4>
+          <ul className="list-items">
+            <li>
+              <strong>Original DDL Script:</strong> Keep the source DDL script unmodified in syntax.
+            </li>
+            <li>
+              <strong>Constraint Mappings:</strong> Ensure foreign keys are present to parse execution dependencies correctly.
+            </li>
+          </ul>
+        </div>
+
+        <div className="list-col">
+          <h4 className="list-title">
+            <span className="list-check-dot blue"></span>
+            Optional supporting files
+          </h4>
+          <ul className="list-items">
+            <li>
+              <strong>Metadata CSV/JSON:</strong> Crucial for table schema lookup and dynamic wildcards expansion.
+            </li>
+            <li>
+              <strong>User Mappings:</strong> For mapping legacy Postgres user accounts to SQL Server logins.
+            </li>
+          </ul>
+        </div>
+      </div>
+
       {/* 📂 Drag & Drop Schema Area */}
       <div 
+        ref={dropzoneRef}
         className={`dropzone glass-panel ${dragActive ? 'drag-active' : ''}`}
         onDragEnter={handleDrag}
         onDragOver={handleDrag}
@@ -666,6 +859,354 @@ export default function UploadZone({ onFilesUploaded }) {
           padding: 0.85rem 1.75rem;
           font-size: 0.95rem;
           box-shadow: var(--shadow-sm);
+        }
+
+        /* 📋 Preparation Banner Card */
+        .prep-banner-card {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 2.5rem;
+          background: #ffffff;
+          border-radius: var(--radius-lg);
+          border: 1px solid var(--panel-border);
+          box-shadow: var(--shadow-md);
+          text-align: left;
+        }
+        @media (max-width: 900px) {
+          .prep-banner-card {
+            flex-direction: column;
+            gap: 1.5rem;
+            align-items: flex-start;
+          }
+        }
+        .prep-banner-info {
+          flex: 1;
+          max-width: 720px;
+          display: flex;
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 0.65rem;
+        }
+        .prep-banner-tag {
+          font-size: 0.72rem;
+          font-weight: 800;
+          color: var(--primary);
+          letter-spacing: 0.05em;
+        }
+        .prep-banner-title {
+          font-size: 1.85rem;
+          font-weight: 900;
+          color: var(--text-primary);
+          letter-spacing: -0.015em;
+        }
+        .prep-banner-desc {
+          font-size: 0.92rem;
+          line-height: 1.6;
+          color: var(--text-secondary);
+        }
+        .prep-continue-btn {
+          border-radius: 30px;
+          padding: 0.75rem 1.5rem;
+          font-size: 0.9rem;
+          box-shadow: var(--shadow-sm);
+          flex-shrink: 0;
+        }
+
+        /* 🛡️ Prep Columns Grid */
+        .prep-grid-columns {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 2rem;
+          width: 100%;
+          text-align: left;
+        }
+        @media (max-width: 900px) {
+          .prep-grid-columns {
+            grid-template-columns: 1fr;
+          }
+        }
+        .prep-column-left, .prep-column-right {
+          padding: 2rem;
+          background: #ffffff;
+          border-radius: var(--radius-lg);
+          border: 1px solid var(--panel-border);
+          box-shadow: var(--shadow-md);
+          display: flex;
+          flex-direction: column;
+          gap: 1.5rem;
+        }
+        .prep-column-title {
+          font-size: 1.25rem;
+          font-weight: 800;
+          color: var(--text-primary);
+          display: flex;
+          align-items: center;
+        }
+        
+        .mode-item {
+          display: flex;
+          flex-direction: column;
+          gap: 0.4rem;
+          border-bottom: 1px solid var(--panel-border);
+          padding-bottom: 1rem;
+        }
+        .mode-item:last-child {
+          border-bottom: none;
+          padding-bottom: 0;
+        }
+        .mode-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        .mode-name {
+          font-size: 0.9rem;
+          font-weight: 700;
+          color: var(--text-primary);
+        }
+        .mode-badge {
+          font-size: 0.65rem;
+          font-weight: 700;
+          padding: 0.15rem 0.5rem;
+          border-radius: 30px;
+          text-transform: uppercase;
+        }
+        .mode-badge.recommended {
+          background: rgba(79, 70, 229, 0.08);
+          color: var(--primary);
+        }
+        .mode-badge.supported {
+          background: #f1f5f9;
+          color: var(--text-secondary);
+        }
+        .mode-desc {
+          font-size: 0.8rem;
+          line-height: 1.5;
+          color: var(--text-secondary);
+        }
+
+        .security-guidelines {
+          display: flex;
+          flex-direction: column;
+          gap: 0.75rem;
+          font-size: 0.88rem;
+          line-height: 1.6;
+          color: var(--text-secondary);
+        }
+        .security-guidelines code {
+          background: var(--panel-tab-bg);
+          padding: 0.1rem 0.3rem;
+          border-radius: 4px;
+          font-size: 0.8rem;
+        }
+        .security-alert-box {
+          display: flex;
+          gap: 0.75rem;
+          padding: 1rem;
+          background: var(--warning-bg);
+          border: 1px solid var(--warning-border);
+          border-radius: var(--radius-md);
+        }
+        .alert-icon {
+          font-size: 1.1rem;
+        }
+        .alert-text {
+          font-size: 0.8rem;
+          line-height: 1.5;
+          color: #b45309;
+          font-weight: 500;
+        }
+
+        /* 🎯 Scope Banner Card */
+        .scope-banner-card {
+          display: flex;
+          align-items: center;
+          gap: 1rem;
+          padding: 1.25rem 2rem;
+          background: #e0f2fe;
+          border: 1px solid #bae6fd;
+          border-radius: var(--radius-md);
+          text-align: left;
+        }
+        .scope-icon-wrapper {
+          width: 36px;
+          height: 36px;
+          background: #bae6fd;
+          color: #0369a1;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+        .scope-banner-meta {
+          display: flex;
+          flex-direction: column;
+        }
+        .scope-banner-title {
+          font-size: 0.95rem;
+          font-weight: 800;
+          color: #0369a1;
+        }
+        .scope-banner-desc {
+          font-size: 0.8rem;
+          color: #0e7490;
+        }
+
+        /* 📂 Additional Files Grid */
+        .additional-section-header {
+          display: flex;
+          flex-direction: column;
+          gap: 0.35rem;
+          border-top: 1px solid var(--panel-border);
+          padding-top: 2rem;
+          text-align: left;
+        }
+        .additional-section-sub {
+          font-size: 0.65rem;
+          font-weight: 700;
+          color: var(--error);
+          letter-spacing: 0.05em;
+        }
+        .additional-section-title {
+          font-size: 1.35rem;
+          font-weight: 800;
+          color: var(--text-primary);
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        @media (max-width: 640px) {
+          .additional-section-title {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 0.5rem;
+          }
+        }
+        .additional-badge {
+          font-size: 0.68rem;
+          font-weight: 700;
+          background: rgba(239, 68, 68, 0.08);
+          color: var(--error);
+          padding: 0.25rem 0.65rem;
+          border-radius: 30px;
+          text-transform: uppercase;
+        }
+
+        .additional-cards-grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 1.5rem;
+          width: 100%;
+          text-align: left;
+        }
+        @media (max-width: 900px) {
+          .additional-cards-grid {
+            grid-template-columns: 1fr;
+          }
+        }
+        .additional-card {
+          padding: 2rem;
+          background: #ffffff;
+          border-radius: var(--radius-lg);
+          border: 1px solid var(--panel-border);
+          box-shadow: var(--shadow-sm);
+          display: flex;
+          flex-direction: column;
+          gap: 0.85rem;
+          border-top: 3px solid var(--error);
+        }
+        .add-card-icon {
+          width: 40px;
+          height: 40px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .add-card-icon.red {
+          background: rgba(239, 68, 68, 0.08);
+          color: var(--error);
+        }
+        .additional-card h4 {
+          font-size: 1.05rem;
+          font-weight: 800;
+          color: var(--text-primary);
+        }
+        .add-card-code {
+          font-family: var(--font-mono);
+          font-size: 0.78rem;
+          color: var(--text-secondary);
+        }
+        .add-card-code code {
+          background: var(--panel-tab-bg);
+          padding: 0.1rem 0.3rem;
+          border-radius: 4px;
+        }
+        .add-card-desc {
+          font-size: 0.82rem;
+          line-height: 1.5;
+          color: var(--text-secondary);
+        }
+
+        /* Recommended Lists Footer */
+        .prep-lists-footer {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 2.5rem;
+          padding: 2rem;
+          background: #ffffff;
+          border-radius: var(--radius-lg);
+          border: 1px solid var(--panel-border);
+          box-shadow: var(--shadow-sm);
+          text-align: left;
+        }
+        @media (max-width: 768px) {
+          .prep-lists-footer {
+            grid-template-columns: 1fr;
+            gap: 1.5rem;
+          }
+        }
+        .list-col {
+          display: flex;
+          flex-direction: column;
+          gap: 1rem;
+        }
+        .list-title {
+          font-size: 0.95rem;
+          font-weight: 800;
+          color: var(--text-primary);
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+        }
+        .list-check-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+        }
+        .list-check-dot.green { background: var(--success); }
+        .list-check-dot.blue { background: var(--secondary); }
+        .list-items {
+          list-style: none;
+          display: flex;
+          flex-direction: column;
+          gap: 0.75rem;
+          padding-left: 0.5rem;
+        }
+        .list-items li {
+          font-size: 0.82rem;
+          color: var(--text-secondary);
+          line-height: 1.5;
+          position: relative;
+          padding-left: 1rem;
+        }
+        .list-items li::before {
+          content: '•';
+          position: absolute;
+          left: 0;
+          color: var(--text-muted);
         }
       `}</style>
     </div>
