@@ -1,4 +1,5 @@
 import React, { useState, useRef } from 'react';
+import JSZip from 'jszip';
 
 export default function UploadZone({ onFilesUploaded }) {
   const [dragActive, setDragActive] = useState(false);
@@ -13,6 +14,39 @@ export default function UploadZone({ onFilesUploaded }) {
     dropzoneRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
+  const processZipFile = async (file) => {
+    try {
+      const arrayBuffer = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target.result);
+        reader.onerror = (err) => reject(err);
+        reader.readAsArrayBuffer(file);
+      });
+      const zip = await JSZip.loadAsync(arrayBuffer);
+      
+      const sqlZipFile = Object.values(zip.files).find(f => f.name.endsWith('.sql'));
+      const metaZipFile = Object.values(zip.files).find(f => f.name.endsWith('.json') || f.name.endsWith('.csv'));
+      
+      let extractedSql = null;
+      let extractedMeta = null;
+      
+      if (sqlZipFile) {
+        const blob = await sqlZipFile.async('blob');
+        extractedSql = new File([blob], sqlZipFile.name, { type: 'text/plain' });
+      }
+      
+      if (metaZipFile) {
+        const blob = await metaZipFile.async('blob');
+        extractedMeta = new File([blob], metaZipFile.name, { type: 'text/plain' });
+      }
+      
+      return { sql: extractedSql, meta: extractedMeta };
+    } catch (err) {
+      console.error('Error processing zip file:', err);
+      return { sql: null, meta: null };
+    }
+  };
+
   const handleDrag = (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -23,18 +57,30 @@ export default function UploadZone({ onFilesUploaded }) {
     }
   };
 
-  const handleDrop = (e) => {
+  const handleDrop = async (e) => {
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
 
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       const files = Array.from(e.dataTransfer.files);
-      const sql = files.find(f => f.name.endsWith('.sql'));
-      const meta = files.find(f => f.name.endsWith('.json') || f.name.endsWith('.csv'));
-      
-      if (sql) setSqlFile(sql);
-      if (meta) setMetaFile(meta);
+      const zipFile = files.find(f => f.name.endsWith('.zip'));
+
+      if (zipFile) {
+        const { sql, meta } = await processZipFile(zipFile);
+        if (sql) setSqlFile(sql);
+        if (meta) {
+          setMetaFile(meta);
+        } else {
+          setMetaFile(zipFile);
+        }
+      } else {
+        const sql = files.find(f => f.name.endsWith('.sql'));
+        const meta = files.find(f => f.name.endsWith('.json') || f.name.endsWith('.csv'));
+        
+        if (sql) setSqlFile(sql);
+        if (meta) setMetaFile(meta);
+      }
     }
   };
 
@@ -44,9 +90,16 @@ export default function UploadZone({ onFilesUploaded }) {
     }
   };
 
-  const handleMetaChange = (e) => {
+  const handleMetaChange = async (e) => {
     if (e.target.files && e.target.files[0]) {
-      setMetaFile(e.target.files[0]);
+      const file = e.target.files[0];
+      if (file.name.endsWith('.zip')) {
+        const { sql, meta } = await processZipFile(file);
+        if (sql) setSqlFile(sql);
+        setMetaFile(file);
+      } else {
+        setMetaFile(file);
+      }
     }
   };
 
@@ -71,22 +124,50 @@ export default function UploadZone({ onFilesUploaded }) {
       
       if (metaFile) {
         const metaReader = new FileReader();
-        metaReader.onload = (e2) => {
-          const metaContent = e2.target.result;
-          let parsedMeta = null;
-          try {
-            if (metaFile.name.endsWith('.json')) {
-              parsedMeta = JSON.parse(metaContent);
-            } else {
-              // CSV basic parser
-              parsedMeta = parseCsv(metaContent);
+        if (metaFile.name.endsWith('.zip')) {
+          metaReader.onload = async (e2) => {
+            try {
+              const arrayBuffer = e2.target.result;
+              const zip = await JSZip.loadAsync(arrayBuffer);
+              const zipFile = Object.values(zip.files).find(f => f.name.endsWith('.json') || f.name.endsWith('.csv'));
+              if (zipFile) {
+                const fileContent = await zipFile.async('string');
+                let parsedMeta = null;
+                if (zipFile.name.endsWith('.json')) {
+                  parsedMeta = JSON.parse(fileContent);
+                } else {
+                  parsedMeta = parseCsv(fileContent);
+                }
+                onFilesUploaded(sqlContent, sqlFile.name, parsedMeta);
+              } else {
+                alert('No .json or .csv metadata file found inside the uploaded ZIP folder!');
+                onFilesUploaded(sqlContent, sqlFile.name, null);
+              }
+            } catch (err) {
+              console.error('Failed to parse metadata from ZIP file:', err);
+              alert('Error reading metadata ZIP: ' + err.message);
+              onFilesUploaded(sqlContent, sqlFile.name, null);
             }
-          } catch (err) {
-            console.error('Failed to parse metadata file:', err);
-          }
-          onFilesUploaded(sqlContent, sqlFile.name, parsedMeta);
-        };
-        metaReader.readAsText(metaFile);
+          };
+          metaReader.readAsArrayBuffer(metaFile);
+        } else {
+          metaReader.onload = (e2) => {
+            const metaContent = e2.target.result;
+            let parsedMeta = null;
+            try {
+              if (metaFile.name.endsWith('.json')) {
+                parsedMeta = JSON.parse(metaContent);
+              } else {
+                // CSV basic parser
+                parsedMeta = parseCsv(metaContent);
+              }
+            } catch (err) {
+              console.error('Failed to parse metadata file:', err);
+            }
+            onFilesUploaded(sqlContent, sqlFile.name, parsedMeta);
+          };
+          metaReader.readAsText(metaFile);
+        }
       } else {
         onFilesUploaded(sqlContent, sqlFile.name, null);
       }
@@ -452,7 +533,7 @@ export default function UploadZone({ onFilesUploaded }) {
               type="file" 
               ref={metaInputRef} 
               style={{ display: 'none' }} 
-              accept=".csv,.json" 
+              accept=".csv,.json,.zip" 
               onChange={handleMetaChange} 
             />
             <div className="slot-icon">
@@ -462,7 +543,7 @@ export default function UploadZone({ onFilesUploaded }) {
               </svg>
             </div>
             <div className="slot-info">
-              <h4>Optional Metadata (.csv / .json)</h4>
+              <h4>Optional Metadata (.csv / .json / .zip)</h4>
               <p>{metaFile ? metaFile.name : 'Choose column metadata definitions'}</p>
             </div>
             {metaFile && (
@@ -867,7 +948,7 @@ export default function UploadZone({ onFilesUploaded }) {
           justify-content: space-between;
           align-items: center;
           padding: 2.5rem;
-          background: #ffffff;
+          background: var(--panel-bg);
           border-radius: var(--radius-lg);
           border: 1px solid var(--panel-border);
           box-shadow: var(--shadow-md);
@@ -928,7 +1009,7 @@ export default function UploadZone({ onFilesUploaded }) {
         }
         .prep-column-left, .prep-column-right {
           padding: 2rem;
-          background: #ffffff;
+          background: var(--panel-bg);
           border-radius: var(--radius-lg);
           border: 1px solid var(--panel-border);
           box-shadow: var(--shadow-md);
@@ -1108,7 +1189,7 @@ export default function UploadZone({ onFilesUploaded }) {
         }
         .additional-card {
           padding: 2rem;
-          background: #ffffff;
+          background: var(--panel-bg);
           border-radius: var(--radius-lg);
           border: 1px solid var(--panel-border);
           box-shadow: var(--shadow-sm);
@@ -1156,7 +1237,7 @@ export default function UploadZone({ onFilesUploaded }) {
           grid-template-columns: 1fr 1fr;
           gap: 2.5rem;
           padding: 2rem;
-          background: #ffffff;
+          background: var(--panel-bg);
           border-radius: var(--radius-lg);
           border: 1px solid var(--panel-border);
           box-shadow: var(--shadow-sm);

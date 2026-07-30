@@ -16,28 +16,7 @@ export default function Header({ theme, onToggleTheme, onOpenSettings, activeSte
           </div>
         </div>
 
-        {/* Center Navigation Pills */}
-        <nav className="header-nav">
-          <button 
-            className={`nav-pill ${activeStep === 'upload' || activeStep === 'workspace' ? 'active' : ''}`}
-            onClick={onReset}
-          >
-            Pipeline
-          </button>
-          <button 
-            className={`nav-pill ${activeStep === 'summary' ? 'active' : ''}`}
-            disabled={activeStep === 'upload'}
-            onClick={() => {}} // Summary is automatically accessible when step is summary
-            title={activeStep === 'upload' ? 'Upload a schema first' : 'View Migration Report'}
-          >
-            Report Designer
-          </button>
-          <button className="nav-pill" onClick={onOpenSettings}>
-            Settings
-          </button>
-        </nav>
-
-        {/* Right Action Icons & Deploy */}
+        {/* Right Action Icons & Settings */}
         <div className="header-actions">
           {activeStep !== 'upload' && (
             <div className="stats-indicator">
@@ -61,16 +40,9 @@ export default function Header({ theme, onToggleTheme, onOpenSettings, activeSte
             {new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })}
           </div>
 
-          {activeStep === 'workspace' && (
-            <button className="btn-deploy-main" onClick={() => window.dispatchEvent(new CustomEvent('trigger-go-to-summary'))}>
-              <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '0.3rem' }}>
-                <path d="M21.2 15a8.7 8.7 0 0 1-1.5 2.5 8.8 8.8 0 0 1-2.5 1.5 8.7 8.7 0 0 1-5.2 0 8.8 8.8 0 0 1-2.5-1.5 8.7 8.7 0 0 1-1.5-2.5" />
-                <path d="M12 2v13" />
-                <path d="m16 11-4 4-4-4" />
-              </svg>
-              Deploy
-            </button>
-          )}
+          <button className="theme-btn-round" onClick={onOpenSettings} title="Open Settings" style={{ fontSize: '0.9rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            ⚙️
+          </button>
 
           {user && (
             <div className="header-profile-section">
