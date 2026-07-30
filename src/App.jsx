@@ -126,7 +126,13 @@ export default function App() {
       }
     });
 
-    return () => subscription.unsubscribe();
+    const handleGoToSummary = () => setStep('summary');
+    window.addEventListener('trigger-go-to-summary', handleGoToSummary);
+
+    return () => {
+      subscription.unsubscribe();
+      window.removeEventListener('trigger-go-to-summary', handleGoToSummary);
+    };
   }, []);
 
   const handleSignOut = async () => {

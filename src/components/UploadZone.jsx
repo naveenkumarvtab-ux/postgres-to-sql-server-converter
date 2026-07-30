@@ -107,11 +107,104 @@ export default function UploadZone({ onFilesUploaded }) {
 
   return (
     <div className="upload-container container">
-      <div className="upload-header">
-        <h2>Convert Postgres schemas to T-SQL</h2>
-        <p>Upload a PostgreSQL schema dump (.sql generated with pg_dump --schema-only). You can optionally upload a JSON/CSV file with column metadata mapping too.</p>
+      {/* 🚀 Hero Banner Section */}
+      <div className="hero-banner glass-panel">
+        <div className="hero-info">
+          <span className="hero-badge-pill">
+            <span className="hero-badge-dot"></span>
+            AI MIGRATION ENGINE ACTIVE
+          </span>
+          <h2 className="hero-title">
+            PostgreSQL <span className="title-arrow">➜</span> SQL Server
+          </h2>
+          <p className="hero-desc">
+            Enterprise-grade automated migration. Upload your PostgreSQL scripts, run the analysis
+            engine, and export a deployment-ready SQL Server T-SQL project with structure validation and dependency checks.
+          </p>
+        </div>
+
+        <div className="hero-stats">
+          <div className="stat-card">
+            <div className="stat-icon-wrapper purple">
+              <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2.5" fill="none">
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+              </svg>
+            </div>
+            <div className="stat-meta">
+              <span className="stat-val">100%</span>
+              <span className="stat-label">Conversion accuracy</span>
+            </div>
+          </div>
+
+          <div className="stat-card">
+            <div className="stat-icon-wrapper orange">
+              <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2.5" fill="none">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+              </svg>
+            </div>
+            <div className="stat-meta">
+              <span className="stat-val">10x</span>
+              <span className="stat-label">Faster than manual</span>
+            </div>
+          </div>
+
+          <div className="stat-card">
+            <div className="stat-icon-wrapper blue">
+              <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2.5" fill="none">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+              </svg>
+            </div>
+            <div className="stat-meta">
+              <span className="stat-val">3</span>
+              <span className="stat-label">Core stages</span>
+            </div>
+          </div>
+        </div>
       </div>
 
+      {/* 🧭 Stage Navigation & Stepper */}
+      <div className="stage-navigation glass-panel">
+        <div className="stage-nav-header">
+          <div className="stage-title-group">
+            <div className="stage-icon-circle">
+              <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" strokeWidth="2.5" fill="none">
+                <polygon points="12 2 2 7 12 12 22 7 12 2" />
+                <polyline points="2 17 12 22 22 17" />
+                <polyline points="2 12 12 17 22 12" />
+              </svg>
+            </div>
+            <div className="stage-label-stack">
+              <span className="stage-subtitle">PIPELINE NAVIGATION • STAGE 1 OF 3</span>
+              <span className="stage-main-title">Instructions & Upload</span>
+            </div>
+          </div>
+
+          <div className="phase-pills">
+            <span className="phase-pill active">Phase 1: Capture & Upload</span>
+            <span className="phase-pill">Phase 2: Analyze & Convert</span>
+            <span className="phase-pill">Phase 3: Validate & Export</span>
+          </div>
+        </div>
+
+        <div className="step-stepper">
+          <div className="step-pill completed">
+            <span className="step-circle">✓</span>
+            <span className="step-text">Instructions</span>
+          </div>
+          <div className="step-pill active">
+            <span className="step-circle">2</span>
+            <span className="step-text">Upload files</span>
+          </div>
+          <div className="step-pill">
+            <span className="step-circle">3</span>
+            <span className="step-text">Workspace Analysis</span>
+          </div>
+        </div>
+      </div>
+
+      {/* 📂 Drag & Drop Schema Area */}
       <div 
         className={`dropzone glass-panel ${dragActive ? 'drag-active' : ''}`}
         onDragEnter={handleDrag}
@@ -120,19 +213,22 @@ export default function UploadZone({ onFilesUploaded }) {
         onDrop={handleDrop}
       >
         <div className="dropzone-content">
-          <svg className="upload-icon" viewBox="0 0 24 24" width="48" height="48" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-            <polyline points="17 8 12 3 7 8" />
-            <line x1="12" y1="3" x2="12" y2="15" />
-          </svg>
-          <h3>Drag & Drop Schema Files Here</h3>
-          <p className="dropzone-sub">Supports SQL schema dumps and metadata (CSV/JSON)</p>
-          <div className="divider-text">or</div>
+          <div className="dropzone-icon-circle">
+            <svg className="upload-icon" viewBox="0 0 24 24" width="32" height="32" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="17 8 12 3 7 8" />
+              <line x1="12" y1="3" x2="12" y2="15" />
+            </svg>
+          </div>
+          <h3>Prepare your PostgreSQL migration package</h3>
+          <p className="dropzone-sub">
+            Drag & drop your PostgreSQL `.sql` schema dump script, and optional CSV/JSON column metadata definitions.
+          </p>
         </div>
 
         <div className="upload-slots">
           {/* SQL Slot */}
-          <div className={`file-slot glass-panel ${sqlFile ? 'has-file' : ''}`} onClick={() => sqlInputRef.current?.click()}>
+          <div className={`file-slot ${sqlFile ? 'has-file' : ''}`} onClick={() => sqlInputRef.current?.click()}>
             <input 
               type="file" 
               ref={sqlInputRef} 
@@ -141,12 +237,9 @@ export default function UploadZone({ onFilesUploaded }) {
               onChange={handleSqlChange} 
             />
             <div className="slot-icon">
-              <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
+              <svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" strokeWidth="2.5" fill="none">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                 <polyline points="14 2 14 8 20 8" />
-                <line x1="16" y1="13" x2="8" y2="13" />
-                <line x1="16" y1="17" x2="8" y2="17" />
-                <polyline points="10 9 9 9 8 9" />
               </svg>
             </div>
             <div className="slot-info">
@@ -155,16 +248,13 @@ export default function UploadZone({ onFilesUploaded }) {
             </div>
             {sqlFile && (
               <button className="btn-remove" onClick={removeSqlFile} aria-label="Remove SQL file" title="Remove SQL file">
-                <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="3 6 5 6 21 6"></polyline>
-                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                </svg>
+                ✕
               </button>
             )}
           </div>
 
           {/* Meta Slot */}
-          <div className={`file-slot glass-panel ${metaFile ? 'has-file' : ''}`} onClick={() => metaInputRef.current?.click()}>
+          <div className={`file-slot ${metaFile ? 'has-file' : ''}`} onClick={() => metaInputRef.current?.click()}>
             <input 
               type="file" 
               ref={metaInputRef} 
@@ -173,12 +263,9 @@ export default function UploadZone({ onFilesUploaded }) {
               onChange={handleMetaChange} 
             />
             <div className="slot-icon">
-              <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
+              <svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" strokeWidth="2.5" fill="none">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                 <polyline points="14 2 14 8 20 8" />
-                <line x1="16" y1="13" x2="8" y2="13" />
-                <line x1="16" y1="17" x2="8" y2="17" />
-                <polyline points="10 9 9 9 8 9" />
               </svg>
             </div>
             <div className="slot-info">
@@ -187,10 +274,7 @@ export default function UploadZone({ onFilesUploaded }) {
             </div>
             {metaFile && (
               <button className="btn-remove" onClick={removeMetaFile} aria-label="Remove metadata file" title="Remove metadata file">
-                <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="3 6 5 6 21 6"></polyline>
-                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                </svg>
+                ✕
               </button>
             )}
           </div>
@@ -201,41 +285,257 @@ export default function UploadZone({ onFilesUploaded }) {
           disabled={!sqlFile}
           onClick={handleProcess}
         >
-          Parse & Convert Schema
-          <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="9 18 15 12 9 6" />
+          Continue to Workspace
+          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round" style={{ marginLeft: '0.3rem' }}>
+            <line x1="5" y1="12" x2="19" y2="12" />
+            <polyline points="12 5 19 12 12 19" />
           </svg>
         </button>
       </div>
 
       <style>{`
         .upload-container {
-          padding-top: 4rem;
+          padding-top: 2rem;
           padding-bottom: 4rem;
-          max-width: 800px !important;
+          max-width: 1100px !important;
           animation: fadeIn 0.4s ease-out;
+          display: flex;
+          flex-direction: column;
+          gap: 2rem;
         }
-        
-        .upload-header {
-          text-align: center;
-          margin-bottom: 3rem;
+
+        /* 🚀 Hero Banner */
+        .hero-banner {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 2.5rem;
+          background: var(--panel-bg);
+          border-radius: var(--radius-lg);
+          border: 1px solid var(--panel-border);
+          box-shadow: var(--shadow-md);
         }
-        
-        .upload-header h2 {
-          font-size: 2.25rem;
-          font-weight: 800;
-          margin-bottom: 0.75rem;
-          background: linear-gradient(135deg, var(--text-primary) 40%, var(--primary) 100%);
-          -webkit-background-clip: text;
-          -webkit-text-fill-color: transparent;
+        @media (max-width: 900px) {
+          .hero-banner {
+            flex-direction: column;
+            gap: 2rem;
+            align-items: flex-start;
+          }
         }
-        
-        .upload-header p {
+        .hero-info {
+          flex: 1;
+          max-width: 620px;
+          display: flex;
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 0.85rem;
+        }
+        .hero-badge-pill {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.35rem;
+          font-size: 0.7rem;
+          font-weight: 700;
+          color: var(--primary);
+          background: rgba(79, 70, 229, 0.08);
+          padding: 0.25rem 0.65rem;
+          border-radius: 30px;
+        }
+        .hero-badge-dot {
+          width: 6px;
+          height: 6px;
+          background: var(--primary);
+          border-radius: 50%;
+          display: inline-block;
+        }
+        .hero-title {
+          font-size: 2.5rem;
+          font-weight: 900;
+          color: var(--text-primary);
+          letter-spacing: -0.02em;
+        }
+        .title-arrow {
           color: var(--text-secondary);
-          line-height: 1.6;
-          font-size: 1.05rem;
+          opacity: 0.8;
+          font-weight: 300;
         }
-        
+        .hero-desc {
+          font-size: 0.95rem;
+          line-height: 1.6;
+          color: var(--text-secondary);
+        }
+        .hero-stats {
+          display: flex;
+          flex-direction: column;
+          gap: 1rem;
+          min-width: 260px;
+        }
+        .stat-card {
+          display: flex;
+          align-items: center;
+          gap: 0.85rem;
+          padding: 0.85rem 1.25rem;
+          background: var(--panel-tab-bg);
+          border: 1px solid var(--panel-border);
+          border-radius: var(--radius-md);
+        }
+        .stat-icon-wrapper {
+          width: 32px;
+          height: 32px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .stat-icon-wrapper.purple { background: rgba(79, 70, 229, 0.1); color: var(--primary); }
+        .stat-icon-wrapper.orange { background: rgba(245, 158, 11, 0.1); color: var(--warning); }
+        .stat-icon-wrapper.blue { background: rgba(14, 165, 233, 0.1); color: var(--secondary); }
+        .stat-meta {
+          display: flex;
+          flex-direction: column;
+        }
+        .stat-val {
+          font-size: 1.1rem;
+          font-weight: 800;
+          color: var(--text-primary);
+          line-height: 1.1;
+        }
+        .stat-label {
+          font-size: 0.72rem;
+          font-weight: 600;
+          color: var(--text-secondary);
+        }
+
+        /* 🧭 Stage Navigation & Stepper */
+        .stage-navigation {
+          padding: 1.5rem 2rem;
+          background: var(--panel-bg);
+          border-radius: var(--radius-md);
+          border: 1px solid var(--panel-border);
+          display: flex;
+          flex-direction: column;
+          gap: 1.5rem;
+        }
+        .stage-nav-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        @media (max-width: 900px) {
+          .stage-nav-header {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 1rem;
+          }
+        }
+        .stage-title-group {
+          display: flex;
+          align-items: center;
+          gap: 0.85rem;
+        }
+        .stage-icon-circle {
+          width: 36px;
+          height: 36px;
+          background: rgba(79, 70, 229, 0.08);
+          color: var(--primary);
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .stage-label-stack {
+          display: flex;
+          flex-direction: column;
+        }
+        .stage-subtitle {
+          font-size: 0.65rem;
+          font-weight: 700;
+          color: var(--text-muted);
+          letter-spacing: 0.05em;
+        }
+        .stage-main-title {
+          font-size: 1.1rem;
+          font-weight: 800;
+          color: var(--text-primary);
+        }
+        .phase-pills {
+          display: flex;
+          gap: 0.5rem;
+          background: var(--panel-tab-bg);
+          padding: 0.25rem;
+          border-radius: 30px;
+          border: 1px solid var(--panel-border);
+        }
+        .phase-pill {
+          padding: 0.35rem 0.85rem;
+          font-size: 0.75rem;
+          font-weight: 700;
+          color: var(--text-secondary);
+          border-radius: 30px;
+        }
+        .phase-pill.active {
+          background: var(--primary);
+          color: #fff;
+        }
+        .step-stepper {
+          display: flex;
+          gap: 1rem;
+          border-top: 1px solid var(--panel-border);
+          padding-top: 1.25rem;
+        }
+        @media (max-width: 640px) {
+          .step-stepper {
+            flex-direction: column;
+            gap: 0.75rem;
+          }
+        }
+        .step-pill {
+          flex: 1;
+          display: flex;
+          align-items: center;
+          gap: 0.65rem;
+          padding: 0.65rem 1.25rem;
+          background: var(--panel-tab-bg);
+          border: 1px solid var(--panel-border);
+          border-radius: 30px;
+          color: var(--text-muted);
+          font-size: 0.85rem;
+          font-weight: 600;
+        }
+        .step-pill.active {
+          background: rgba(79, 70, 229, 0.04);
+          border-color: var(--primary);
+          color: var(--primary);
+        }
+        .step-pill.completed {
+          background: var(--success-bg);
+          border-color: var(--success-border);
+          color: var(--success);
+        }
+        .step-circle {
+          width: 20px;
+          height: 20px;
+          border-radius: 50%;
+          background: #fff;
+          border: 1px solid currentColor;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 0.72rem;
+          font-weight: 800;
+        }
+        .step-pill.active .step-circle {
+          background: var(--primary);
+          color: #fff;
+          border-color: var(--primary);
+        }
+        .step-pill.completed .step-circle {
+          background: var(--success);
+          color: #fff;
+          border-color: var(--success);
+        }
+
+        /* 📂 Drag & Drop Schema Area */
         .dropzone {
           padding: 3rem 2rem;
           text-align: center;
@@ -245,76 +545,55 @@ export default function UploadZone({ onFilesUploaded }) {
           flex-direction: column;
           align-items: center;
           gap: 2rem;
-          background: var(--dropzone-bg, rgba(13, 20, 38, 0.4));
-          border-radius: var(--radius-md);
+          background: var(--panel-bg);
+          border-radius: var(--radius-lg);
+          box-shadow: var(--shadow-md);
         }
-        
         .dropzone.drag-active {
           border-color: var(--primary);
-          background: rgba(99, 102, 241, 0.04);
-          transform: scale(1.01);
-          box-shadow: 0 0 30px rgba(99,102,241,0.08);
+          background: rgba(79, 70, 229, 0.02);
+          transform: scale(1.005);
         }
-        
         .dropzone-content {
           display: flex;
           flex-direction: column;
           align-items: center;
-          gap: 0.75rem;
+          gap: 0.85rem;
+          max-width: 500px;
         }
-        
-        .upload-icon {
+        .dropzone-icon-circle {
+          width: 60px;
+          height: 60px;
+          background: rgba(79, 70, 229, 0.06);
           color: var(--primary);
-          filter: drop-shadow(0 0 8px rgba(99,102,241,0.2));
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
           margin-bottom: 0.5rem;
         }
-        
         .dropzone-content h3 {
-          font-size: 1.25rem;
-          font-weight: 700;
+          font-size: 1.35rem;
+          font-weight: 800;
           color: var(--text-primary);
         }
-        
         .dropzone-sub {
           font-size: 0.85rem;
-          color: var(--text-muted);
+          color: var(--text-secondary);
+          line-height: 1.5;
         }
-        
-        .divider-text {
-          font-size: 0.85rem;
-          color: var(--text-muted);
-          text-transform: uppercase;
-          letter-spacing: 0.1em;
-          margin-top: 0.5rem;
-          position: relative;
-          width: 200px;
-        }
-        
-        .divider-text::before, .divider-text::after {
-          content: '';
-          position: absolute;
-          top: 50%;
-          width: 35%;
-          height: 1px;
-          background: var(--panel-border);
-        }
-        
-        .divider-text::before { left: 0; }
-        .divider-text::after { right: 0; }
-        
         .upload-slots {
           display: grid;
           grid-template-columns: 1fr 1fr;
-          gap: 1.25rem;
+          gap: 1.5rem;
           width: 100%;
+          max-width: 720px;
         }
-        
         @media (max-width: 640px) {
           .upload-slots {
             grid-template-columns: 1fr;
           }
         }
-        
         .file-slot {
           padding: 1.25rem;
           display: flex;
@@ -322,76 +601,71 @@ export default function UploadZone({ onFilesUploaded }) {
           gap: 1rem;
           cursor: pointer;
           text-align: left;
-          background: var(--panel-bg);
+          background: var(--panel-tab-bg);
           border: 1px solid var(--panel-border);
-          border-radius: var(--radius-sm);
+          border-radius: var(--radius-md);
           position: relative;
           user-select: none;
+          transition: all var(--transition-fast);
         }
-        
         .file-slot:hover {
-          background: var(--panel-bg-opaque);
           border-color: var(--panel-border-hover);
           transform: translateY(-1px);
         }
-        
         .file-slot.has-file {
-          border-color: rgba(99,102,241,0.3);
-          background: rgba(99,102,241,0.03);
+          border-color: rgba(79, 70, 229, 0.25);
+          background: rgba(79, 70, 229, 0.03);
         }
-        
         .slot-icon {
-          color: var(--text-secondary);
+          color: var(--text-muted);
           flex-shrink: 0;
         }
-        
         .file-slot.has-file .slot-icon {
           color: var(--primary);
         }
-        
         .slot-info h4 {
-          font-size: 0.9rem;
+          font-size: 0.88rem;
           font-weight: 700;
           color: var(--text-primary);
-          margin-bottom: 0.2rem;
+          margin-bottom: 0.15rem;
         }
-        
         .slot-info p {
-          font-size: 0.78rem;
+          font-size: 0.75rem;
           color: var(--text-secondary);
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
-          max-width: 220px;
+          max-width: 200px;
         }
-        
         .btn-remove {
           position: absolute;
           right: 12px;
-          background: rgba(255, 255, 255, 0.05);
+          background: var(--panel-bg);
           color: var(--text-secondary);
           border: 1px solid var(--panel-border);
           border-radius: 50%;
-          width: 28px;
-          height: 28px;
+          width: 24px;
+          height: 24px;
           display: flex;
           align-items: center;
           justify-content: center;
           cursor: pointer;
+          font-size: 0.65rem;
+          font-weight: bold;
           transition: all 0.2s;
         }
-        
         .btn-remove:hover {
-          background: rgba(239, 68, 68, 0.15);
+          background: var(--error-bg);
           color: var(--error);
-          border-color: rgba(239, 68, 68, 0.25);
-          transform: scale(1.05);
+          border-color: var(--error-border);
         }
-        
         .btn-process {
           width: 100%;
-          max-width: 320px;
-          margin-top: 1rem;
+          max-width: 280px;
+          border-radius: 30px;
+          padding: 0.85rem 1.75rem;
+          font-size: 0.95rem;
+          box-shadow: var(--shadow-sm);
         }
       `}</style>
     </div>

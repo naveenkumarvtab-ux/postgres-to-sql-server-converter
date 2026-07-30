@@ -4,23 +4,45 @@ export default function Header({ theme, onToggleTheme, onOpenSettings, activeSte
   return (
     <header className="app-header">
       <div className="container header-container">
+        {/* Left Brand Area */}
         <div className="brand" onClick={onReset} style={{ cursor: 'pointer' }}>
-          <svg className="logo" viewBox="0 0 24 24" width="32" height="32" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4 11a9 9 0 0 1 9 9" />
-            <path d="M4 4a16 16 0 0 1 16 16" />
-            <circle cx="5" cy="19" r="1" fill="currentColor" />
-          </svg>
-          <div className="brand-text">
-            <h1>TranspileDB</h1>
-            <span>Postgres to SQL Server</span>
+          <div className="brand-avatar">VT</div>
+          <div className="brand-text-wrapper">
+            <span className="brand-company">VTAB SQUARE</span>
+            <span className="brand-badge-pill">
+              <span className="brand-dot-pulse"></span>
+              AI MIGRATION ENGINE v2.0
+            </span>
           </div>
         </div>
 
+        {/* Center Navigation Pills */}
+        <nav className="header-nav">
+          <button 
+            className={`nav-pill ${activeStep === 'upload' || activeStep === 'workspace' ? 'active' : ''}`}
+            onClick={onReset}
+          >
+            Pipeline
+          </button>
+          <button 
+            className={`nav-pill ${activeStep === 'summary' ? 'active' : ''}`}
+            disabled={activeStep === 'upload'}
+            onClick={() => {}} // Summary is automatically accessible when step is summary
+            title={activeStep === 'upload' ? 'Upload a schema first' : 'View Migration Report'}
+          >
+            Report Designer
+          </button>
+          <button className="nav-pill" onClick={onOpenSettings}>
+            Settings
+          </button>
+        </nav>
+
+        {/* Right Action Icons & Deploy */}
         <div className="header-actions">
           {activeStep !== 'upload' && (
-            <div className="stats-indicator glass-panel">
+            <div className="stats-indicator">
               <span className="dot pulse"></span>
-              <span className="stats-label">{parsedCount} Objects Parsed</span>
+              <span className="stats-label">{parsedCount} Objects</span>
             </div>
           )}
 
@@ -29,62 +51,46 @@ export default function Header({ theme, onToggleTheme, onOpenSettings, activeSte
               className={`btn btn-primary btn-bulk-translate ${isBulkTranslating ? 'loading' : ''}`}
               onClick={onBulkTranslate}
               disabled={isBulkTranslating}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 1rem', fontSize: '0.85rem' }}
+              style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem', borderRadius: '30px' }}
             >
-              <svg className="spark-icon" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round" style={{ animation: isBulkTranslating ? 'rotate 1.5s linear infinite' : 'none' }}>
-                <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2" />
-                <line x1="12" y1="22" x2="12" y2="15.5" />
-                <line x1="22" y1="8.5" x2="12" y2="15.5" />
-                <line x1="2" y1="8.5" x2="12" y2="15.5" />
-              </svg>
-              {isBulkTranslating ? 'Translating...' : `Translate All Pending (${pendingCount})`}
+              Translate All ({pendingCount})
             </button>
           )}
 
-          {activeStep !== 'upload' && (
-            <button className="btn btn-secondary" onClick={onReset}>
-              <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-                <path d="M3 3v5h5" />
+          <div className="header-date-badge">
+            {new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })}
+          </div>
+
+          {activeStep === 'workspace' && (
+            <button className="btn-deploy-main" onClick={() => window.dispatchEvent(new CustomEvent('trigger-go-to-summary'))}>
+              <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '0.3rem' }}>
+                <path d="M21.2 15a8.7 8.7 0 0 1-1.5 2.5 8.8 8.8 0 0 1-2.5 1.5 8.7 8.7 0 0 1-5.2 0 8.8 8.8 0 0 1-2.5-1.5 8.7 8.7 0 0 1-1.5-2.5" />
+                <path d="M12 2v13" />
+                <path d="m16 11-4 4-4-4" />
               </svg>
-              Start Over
+              Deploy
             </button>
           )}
 
           {user && (
             <div className="header-profile-section">
-              <div className="user-badge">
+              <div className="user-badge" title={user.email}>
                 <div className="user-avatar-placeholder">
                   {user.email ? user.email.charAt(0).toUpperCase() : 'U'}
                 </div>
-                <span>{user.email}</span>
               </div>
-              <button className="btn-signout" onClick={onSignOut}>
-                Sign Out
+              <button className="btn-signout-round" onClick={onSignOut} title="Sign Out">
+                <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                  <polyline points="16 17 21 12 16 7" />
+                  <line x1="21" y1="12" x2="9" y2="12" />
+                </svg>
               </button>
             </div>
           )}
 
-          <div className="theme-toggle-wrapper">
-            <button 
-              className={`theme-toggle-btn ${theme === 'dark' ? 'dark' : ''}`} 
-              onClick={onToggleTheme}
-              aria-label="Toggle Theme"
-              title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Mode`}
-              type="button"
-            >
-              <div className="theme-toggle-knob">
-                {theme === 'dark' ? '🌙' : '☀️'}
-              </div>
-            </button>
-          </div>
-
-          <button className="btn btn-secondary btn-settings" onClick={onOpenSettings} aria-label="Open Settings">
-            <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-            </svg>
-            Settings
+          <button className="theme-btn-round" onClick={onToggleTheme} title="Toggle Theme">
+            {theme === 'dark' ? '🌙' : '☀️'}
           </button>
         </div>
       </div>
@@ -92,13 +98,12 @@ export default function Header({ theme, onToggleTheme, onOpenSettings, activeSte
       <style>{`
         .app-header {
           border-bottom: 1px solid var(--panel-border);
-          background: var(--header-bg, rgba(10, 16, 30, 0.45));
-          backdrop-filter: blur(12px);
-          -webkit-backdrop-filter: blur(12px);
+          background: var(--header-bg);
+          box-shadow: var(--shadow-sm);
           position: sticky;
           top: 0;
           z-index: 100;
-          height: 70px;
+          height: 64px;
           display: flex;
           align-items: center;
         }
@@ -112,43 +117,172 @@ export default function Header({ theme, onToggleTheme, onOpenSettings, activeSte
           align-items: center;
           gap: 0.75rem;
         }
-        .logo {
-          color: var(--primary);
-          filter: drop-shadow(0 0 8px var(--primary-glow));
-        }
-        .brand-text h1 {
-          font-size: 1.35rem;
+        .brand-avatar {
+          width: 32px;
+          height: 32px;
+          background: var(--primary);
+          color: #fff;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
           font-weight: 800;
-          line-height: 1.1;
-          background: linear-gradient(135deg, var(--text-primary) 30%, var(--primary) 100%);
-          -webkit-background-clip: text;
-          -webkit-text-fill-color: transparent;
+          font-size: 0.9rem;
+          box-shadow: var(--shadow-sm);
         }
-        .brand-text span {
-          font-size: 0.75rem;
+        .brand-text-wrapper {
+          display: flex;
+          flex-direction: column;
+        }
+        .brand-company {
+          font-size: 0.95rem;
+          font-weight: 800;
+          color: var(--text-primary);
+          letter-spacing: -0.01em;
+        }
+        .brand-badge-pill {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.35rem;
+          font-size: 0.65rem;
+          font-weight: 700;
+          color: var(--primary);
+          background: rgba(79, 70, 229, 0.08);
+          padding: 0.1rem 0.4rem;
+          border-radius: 4px;
+          margin-top: 0.1rem;
+        }
+        .brand-dot-pulse {
+          width: 5px;
+          height: 5px;
+          background: var(--primary);
+          border-radius: 50%;
+          animation: brandPulse 1.6s infinite;
+        }
+        @keyframes brandPulse {
+          0%, 100% { transform: scale(1); opacity: 1; }
+          50% { transform: scale(1.4); opacity: 0.6; }
+        }
+        
+        .header-nav {
+          display: flex;
+          gap: 0.5rem;
+          background: var(--panel-tab-bg);
+          padding: 0.25rem;
+          border-radius: 30px;
+          border: 1px solid var(--panel-border);
+        }
+        .nav-pill {
+          background: transparent;
+          border: none;
+          padding: 0.45rem 1rem;
+          font-size: 0.85rem;
+          font-weight: 600;
           color: var(--text-secondary);
-          letter-spacing: 0.05em;
-          text-transform: uppercase;
-          font-weight: 500;
+          border-radius: 30px;
+          cursor: pointer;
+          transition: all var(--transition-fast);
         }
+        .nav-pill:hover:not(:disabled) {
+          color: var(--text-primary);
+        }
+        .nav-pill.active {
+          background: var(--primary);
+          color: #fff;
+          box-shadow: var(--shadow-sm);
+        }
+        .nav-pill:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+        
         .header-actions {
           display: flex;
           align-items: center;
-          gap: 1rem;
+          gap: 0.75rem;
         }
+        
+        .header-date-badge {
+          background: var(--panel-tab-bg);
+          border: 1px solid var(--panel-border);
+          border-radius: 30px;
+          padding: 0.4rem 0.85rem;
+          font-size: 0.8rem;
+          font-weight: 600;
+          color: var(--text-secondary);
+        }
+        
+        .btn-deploy-main {
+          display: inline-flex;
+          align-items: center;
+          background: var(--primary);
+          color: #fff;
+          border: none;
+          font-family: var(--font-sans);
+          font-weight: 600;
+          font-size: 0.85rem;
+          padding: 0.45rem 1rem;
+          border-radius: 30px;
+          cursor: pointer;
+          transition: all var(--transition-fast);
+          box-shadow: var(--shadow-sm);
+        }
+        .btn-deploy-main:hover {
+          background: var(--primary-hover);
+          transform: translateY(-1px);
+        }
+        
+        .btn-signout-round {
+          background: transparent;
+          border: 1px solid var(--panel-border);
+          color: var(--text-secondary);
+          width: 32px;
+          height: 32px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+          transition: all var(--transition-fast);
+        }
+        .btn-signout-round:hover {
+          background: rgba(239, 68, 68, 0.08);
+          color: var(--error);
+          border-color: rgba(239, 68, 68, 0.2);
+        }
+        
+        .theme-btn-round {
+          background: var(--panel-tab-bg);
+          border: 1px solid var(--panel-border);
+          width: 32px;
+          height: 32px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+          font-size: 0.9rem;
+          transition: all var(--transition-fast);
+        }
+        .theme-btn-round:hover {
+          background: var(--panel-border);
+        }
+        
         .stats-indicator {
           display: flex;
           align-items: center;
           gap: 0.5rem;
           padding: 0.4rem 0.8rem;
-          border-radius: var(--radius-sm);
-          font-size: 0.85rem;
-          font-weight: 500;
+          border-radius: 30px;
+          font-size: 0.8rem;
+          font-weight: 600;
           border: 1px solid var(--panel-border);
+          background: var(--panel-tab-bg);
+          color: var(--text-secondary);
         }
         .dot {
-          width: 8px;
-          height: 8px;
+          width: 6px;
+          height: 6px;
           border-radius: 50%;
           background: var(--success);
         }
@@ -164,7 +298,7 @@ export default function Header({ theme, onToggleTheme, onOpenSettings, activeSte
         }
         
         @media (max-width: 640px) {
-          .stats-indicator, .btn-settings span {
+          .stats-indicator, .header-date-badge {
             display: none;
           }
         }
