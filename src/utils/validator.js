@@ -167,11 +167,10 @@ export function validateMigration(translatedObjects) {
       const fullRef = match[1].replace(/[\[\]]/g, '').trim();
       
       // Ignore system keywords or common placeholders
-      if (['inserted', 'deleted', 'sys', 'information_schema', 'select', 'values'].includes(fullRef.toLowerCase())) {
+      if (['inserted', 'deleted', 'sys', 'information_schema', 'select', 'values', 'as', 'begin', 'set', 'declare'].includes(fullRef.toLowerCase())) {
         continue;
       }
 
-      // Check if reference contains a schema prefix
       const parts = fullRef.split('.');
       let refSchema = '';
       let refName = '';
@@ -182,26 +181,88 @@ export function validateMigration(translatedObjects) {
         refName = parts[0].toLowerCase();
       }
 
-      // Warn about missing schema prefix
       if (!refSchema) {
-        report.warnings.push({
-          objectName: objLabel,
-          description: `Reference '${fullRef}' has no explicit schema prefix. Assumed default (dbo).`
-        });
         refSchema = 'dbo';
       }
 
-      // Validate references to actual tables
       const refKey = `${refSchema}.${refName}`;
-      if (obj.type !== 'TABLE' && refSchema !== 'sys' && refSchema !== 'information_schema') {
-        // If reference looks like it's a project table but isn't declared
-        if (!declaredObjects.has(refKey) && (refSchema === 'dbo' || refSchema === obj.schema.toLowerCase())) {
-          report.warnings.push({
+      
+      // Validate references to actual tables/views
+      if (refSchema === 'dbo' || refSchema === obj.schema.toLowerCase()) {
+        if (!declaredObjects.has(refKey)) {
+          report.errors.push({
             objectName: objLabel,
-            description: `Broken Dependency / Missing Object: Referenced object '${fullRef}' is missing or could not be resolved in the active migration.`
+            description: `Broken Dependency / Missing Object: Referenced table or view '${fullRef}' does not exist in the active migration.`
           });
+          hasCriticalError = true;
         }
       }
+    }
+
+    // Validate sequence references
+    const seqRefRegex = /NEXT\s+VALUE\s+FOR\s+([a-zA-Z0-9_.[\]]+)/gi;
+    let seqMatch;
+    while ((seqMatch = seqRefRegex.exec(cleanTsql)) !== null) {
+      const fullSeq = seqMatch[1].replace(/[\[\]]/g, '').trim();
+      const parts = fullSeq.split('.');
+      let seqSchema = 'dbo';
+      let seqName = fullSeq.toLowerCase();
+      if (parts.length > 1) {
+        seqSchema = parts[0].toLowerCase();
+        seqName = parts[1].toLowerCase();
+      }
+      const seqKey = `${seqSchema}.${seqName}`;
+      if (!declaredSeqs.has(seqKey)) {
+        report.errors.push({
+          objectName: objLabel,
+          description: `Broken Dependency / Missing Sequence: Referenced sequence '${fullSeq}' does not exist in the active migration.`
+        });
+        hasCriticalError = true;
+      }
+    }
+
+    // Validate foreign key targets
+    if (obj.type === 'TABLE' && obj.parsed && obj.parsed.constraints) {
+      obj.parsed.constraints.forEach(c => {
+        const upperC = c.toUpperCase();
+        if (upperC.includes('FOREIGN KEY') && upperC.includes('REFERENCES')) {
+          const refMatch = c.match(/REFERENCES\s+([^\s(]+)/i);
+          if (refMatch) {
+            const refTable = refMatch[1].replace(/[\[\]]/g, '').trim();
+            const parts = refTable.split('.');
+            let refSchema = 'dbo';
+            let refName = refTable.toLowerCase();
+            if (parts.length > 1) {
+              refSchema = parts[0].toLowerCase();
+              refName = parts[1].toLowerCase();
+            }
+            const refKey = `${refSchema}.${refName}`;
+            if (!declaredTables.has(refKey)) {
+              report.errors.push({
+                objectName: objLabel,
+                description: `Broken Foreign Key Target: Referenced target table '${refTable}' does not exist in the active migration.`
+              });
+              hasCriticalError = true;
+            }
+          }
+        }
+      });
+    }
+
+    // Validate default expressions are valid SQL Server syntax
+    if (obj.type === 'TABLE' && obj.parsed && obj.parsed.columns) {
+      obj.parsed.columns.forEach(col => {
+        if (col.defaultValue) {
+          const defUpper = col.defaultValue.toUpperCase();
+          if (defUpper.includes('::') || defUpper.includes('NOW()') || defUpper.includes('TRUE') || defUpper.includes('FALSE')) {
+            report.errors.push({
+              objectName: objLabel,
+              description: `Invalid Default Value: Column '[${col.name}]' default expression '${col.defaultValue}' contains PostgreSQL-specific syntax.`
+            });
+            hasCriticalError = true;
+          }
+        }
+      });
     }
 
     // 4. Data Type Compatibility for Indexes / Keys

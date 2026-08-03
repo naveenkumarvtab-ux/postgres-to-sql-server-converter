@@ -9,7 +9,9 @@ export async function translatePLpgSQLWithAI({
   originalSql, 
   triggerFunctionSql = null, 
   model = 'gemini-3.1-flash-lite', 
-  apiVersion = 'v1' 
+  apiVersion = 'v1',
+  sourceDialect = 'postgres',
+  validationFeedback = null
 }) {
   if (!apiKey) {
     throw new Error('Google Gemini API Key is missing. Please provide it in settings.');
@@ -18,13 +20,20 @@ export async function translatePLpgSQLWithAI({
   // Construct URL with dynamic apiVersion (v1 or v1beta)
   const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:generateContent?key=${apiKey}`;
 
-  let sqlSection = `Original PostgreSQL Code:
+  let sqlSection = '';
+  if (sourceDialect === 'oracle') {
+    sqlSection = `Original Oracle Code:
+\`\`\`sql
+${originalSql}
+\`\`\``;
+  } else {
+    sqlSection = `Original PostgreSQL Code:
 \`\`\`sql
 ${originalSql}
 \`\`\``;
 
-  if (objectType === 'TRIGGER' && triggerFunctionSql) {
-    sqlSection = `Original PostgreSQL TRIGGER statement:
+    if (objectType === 'TRIGGER' && triggerFunctionSql) {
+      sqlSection = `Original PostgreSQL TRIGGER statement:
 \`\`\`sql
 ${originalSql}
 \`\`\`
@@ -33,9 +42,59 @@ Original PostgreSQL referenced FUNCTION statement (trigger logic):
 \`\`\`sql
 ${triggerFunctionSql}
 \`\`\``;
+    }
   }
 
-  const prompt = `You are an expert database administrator. Translate the following PostgreSQL database object (written in PL/pgSQL or SQL) into its exact Microsoft SQL Server (T-SQL) equivalent.
+  let prompt = '';
+  if (sourceDialect === 'oracle') {
+    prompt = `You are an expert database administrator. Translate the following Oracle database object (written in PL/SQL or SQL DDL) into its exact Microsoft SQL Server (T-SQL) equivalent.
+
+Original Oracle ${objectType} name: "${objectName}"
+
+${sqlSection}
+
+Ensure that:
+1. No Schema Creation: Do not include CREATE SCHEMA statements in your output — assume the target schema already exists. Only output the object definition itself.
+2. Idempotent Objects (CREATE OR ALTER): For Views, Functions, Procedures, and Triggers, use CREATE OR ALTER instead of CREATE or CREATE OR REPLACE (e.g. CREATE OR ALTER VIEW, CREATE OR ALTER FUNCTION, CREATE OR ALTER PROCEDURE, CREATE OR ALTER TRIGGER).
+3. Error Raising & Exceptions: Convert Oracle's RAISE_APPLICATION_ERROR(error_code, msg) to T-SQL THROW.
+   Note: SQL Server's THROW statement does NOT support expressions (like string concatenation) directly as parameters.
+   To include dynamic values or concatenated variables in the message (e.g. using Oracle's '||' string concatenation operator like 'Employee not found: ' || p_employee_id), you MUST build the message into a local variable using string concatenation (+ and CAST as needed) on the line(s) before THROW, then pass that variable as THROW's second argument.
+   * WRONG (will cause syntax error):
+     -- THROW 50001, N'Employee not found: ' + CAST(@p_employee_id AS NVARCHAR(20)), 1; -- (Incorrect: THROW does not support concatenation directly)
+   * RIGHT (always use this pattern for dynamic messages):
+     DECLARE @ErrorMessage NVARCHAR(2048) = N'Employee not found: ' + CAST(@p_employee_id AS NVARCHAR(20));
+     THROW 50001, @ErrorMessage, 1;
+   Since SQL Server functions cannot use THROW/RAISERROR, if a function raises custom exceptions, rewrite it as a stored procedure and add a warning comment block.
+4. NVL and NVL2: Map NVL(a, b) to ISNULL(a, b) or COALESCE(a, b). Map NVL2(a, b, c) to CASE WHEN a IS NOT NULL THEN b ELSE c END.
+5. DECODE Conversion: Map DECODE(expr, val1, res1, val2, res2, ..., default) to an equivalent CASE expression: CASE expr WHEN val1 THEN res1 WHEN val2 THEN res2 ELSE default END.
+6. SYSDATE Conversion: Map SYSDATE to GETDATE() or CURRENT_TIMESTAMP.
+7. DUAL Table: Strip "FROM DUAL" clauses entirely. T-SQL does not require a dummy table for selecting constant values or evaluating functions.
+8. ROWNUM Conversion: Map ROWNUM conditions to ROW_NUMBER() OVER (...) or TOP depending on query logic.
+9. CONNECT BY / START WITH: Map hierarchical/recursive queries to recursive CTEs (Common Table Expressions) in T-SQL.
+10. Identity Columns: Map Oracle 12c+ identity columns (GENERATED ALWAYS AS IDENTITY) to T-SQL IDENTITY(1,1).
+11. Triggers timing, column scoping, and bind virtuals:
+    - Timing & Comments: SQL Server does not support BEFORE triggers. If the Oracle trigger is BEFORE and used for validation/prevention, add a comment noting this timing change and use AFTER or INSTEAD OF (the closer match for write prevention). Flag the timing change explicitly.
+    - Column Scoping: If the trigger is column-scoped (e.g. UPDATE OF salary), wrap the trigger logic inside an IF UPDATE(column) check (e.g. IF UPDATE([salary]) BEGIN ... END) so the trigger only executes when that specific column is modified, rather than being table-wide.
+    - Bind Virtuals: Map trigger bind variables :NEW and :OLD to T-SQL virtual tables inserted and deleted. Ensure trigger logic is set-based.
+12. Sequences (.NEXTVAL): Map sequence usages seq_name.NEXTVAL to NEXT VALUE FOR [seq_name].
+13. Packages Namespacing: If the object was originally member of a package, prefix references to package state variables or other package procedures with explanatory warning comments. Declare the object name exactly as "${objectName}".
+14. SQL Server Function Constraints: SQL Server functions (scalar/table-valued) are highly restricted and CANNOT use THROW, TRY/CATCH blocks, transactions, or state-modifying actions (INSERT/UPDATE/DELETE). Rewrite functions violating these constraints as stored procedures.
+15. Identifier Wrapping & Schema mapping: Wrap EVERY schema, table, view, function, procedure, trigger, and column identifier in square brackets consistently — e.g. [schema].[name] or [table].[column], never schema.name.
+16. Batch Ending: End every CREATE VIEW / CREATE FUNCTION / CREATE PROCEDURE / CREATE TRIGGER object with GO on its own line immediately after the closing END or semicolon, since these must be the only statement in their batch in SQL Server. This is mandatory.
+17. Implicit Exceptions (NO_DATA_FOUND): When translating Oracle PL/SQL blocks containing SELECT ... INTO, detect if zero rows are returned by checking IF @@ROWCOUNT = 0 right after the query. If the original block had a separate EXCEPTION WHEN NO_DATA_FOUND handler (raising a distinct error code/message), preserve both the implicit not-found path (via @@ROWCOUNT check) and any explicit NULL-value check as separate, distinctly-messaged conditions. Do not merge them into one generic check without at minimum a comment explaining the simplification.
+18. MONTHS_BETWEEN Conversion: When converting Oracle MONTHS_BETWEEN(date1, date2) to T-SQL, map it to DATEDIFF(MONTH, date2, date1) and you MUST add this warning comment block directly above it:
+    -- NOTE: approximates Oracle MONTHS_BETWEEN; DATEDIFF(MONTH,...) 
+    -- counts calendar month boundaries only and does not include 
+    -- Oracle's fractional day-based precision.
+19. Global Temporary Tables (GTT): When converting an Oracle CREATE GLOBAL TEMPORARY TABLE, translate it to a SQL Server local temporary table pattern using the '#' prefix on the table name (e.g., CREATE TABLE #[table_name]). You MUST include the following comment block directly above the table definition:
+    -- NOTE: Converted from Oracle GLOBAL TEMPORARY TABLE.
+    -- Oracle GTT definitions are permanent/schema-level with session-scoped data;
+    -- SQL Server local temp tables (#TableName) don't persist independently of the session that creates them.
+20. Anonymous PL/SQL Blocks: If translating a standalone anonymous PL/SQL block (starts with DECLARE or BEGIN, not part of a function/procedure), convert it to a plain T-SQL batch (using BEGIN...END). You MUST convert DBMS_OUTPUT.PUT_LINE('text') to PRINT 'text' or PRINT @variable.
+21. Empty String vs NULL Handling: Oracle treats empty strings ('') as NULL. In SQL Server, they are distinct. When translating Oracle DDL or queries containing IS NULL checks on character/string columns (e.g. notes IS NULL), auto-fix this by converting it to check both NULL and empty string: (notes IS NULL OR notes = ''). Apply this auto-fix directly rather than only flagging it.
+22. Return ONLY the valid T-SQL script. DO NOT wrap the code in markdown code blocks (such as \`\`\`sql ... \`\`\`). Do not include any introductory or concluding text. Your entire response must be direct, executable T-SQL code.`;
+  } else {
+    prompt = `You are an expert database administrator. Translate the following PostgreSQL database object (written in PL/pgSQL or SQL) into its exact Microsoft SQL Server (T-SQL) equivalent.
 
 Original PostgreSQL ${objectType} name: "${objectName}"
 
@@ -44,7 +103,14 @@ ${sqlSection}
 Ensure that:
 1. No Schema Creation: Do not include CREATE SCHEMA statements in your output — assume the target schema already exists. Only output the object definition itself.
 2. Idempotent Objects (CREATE OR ALTER): For Views, Functions, Procedures, and Triggers, use CREATE OR ALTER instead of CREATE or CREATE OR REPLACE (e.g. CREATE OR ALTER VIEW, CREATE OR ALTER FUNCTION, CREATE OR ALTER PROCEDURE, CREATE OR ALTER TRIGGER).
-3. Error Raising & Dynamic Values: Use THROW (not RAISERROR) for raising custom errors inside procedures/triggers, unless printf-style formatting is genuinely required. THROW syntax: THROW <error_number>, N'<message>', <state>; error numbers must be 50000 or higher. Preserve dynamic values (like parameters and variables, e.g., @p_order_id or p_order_id) in THROW/error messages exactly as they appeared in the original PostgreSQL RAISE EXCEPTION message — do not drop parameter interpolation or string concatenation.
+3. Error Raising & Dynamic Values: Use THROW (not RAISERROR) for raising custom errors inside procedures/triggers.
+   Note: SQL Server's THROW statement does NOT support expressions (like string concatenation) directly as parameters.
+   To include dynamic values or concatenated variables in the message, you MUST build the message into a local variable using string concatenation (+ and CAST as needed) on the line(s) before THROW, then pass that variable as THROW's second argument.
+   * WRONG (will cause syntax error):
+     -- THROW 50001, N'Order not found: ' + CAST(@p_order_id AS NVARCHAR(20)), 1; -- (Incorrect: THROW does not support concatenation directly)
+   * RIGHT (always use this pattern for dynamic messages):
+     DECLARE @ErrorMessage NVARCHAR(2048) = N'Order not found: ' + CAST(@p_order_id AS NVARCHAR(20));
+     THROW 50001, @ErrorMessage, 1;
 4. SQL Server Function Constraints: SQL Server functions (scalar/table-valued) are highly restricted and CANNOT use THROW, RAISERROR, TRY/CATCH blocks, transactions (BEGIN TRAN/COMMIT), dynamic SQL, or perform state-modifying actions (INSERT/UPDATE/DELETE). If the original function does any of these, rewrite it using safe table-valued mappings, return status codes, or convert it to a SQL Server STORED PROCEDURE instead and add a warning comment block (-- WARNING: Converted to Stored Procedure due to side-effects/exception handling).
 5. Identifier Wrapping & Schema mapping: Wrap EVERY schema, table, view, function, procedure, trigger, and column identifier in square brackets consistently — e.g. [schema].[name] or [table].[column], never schema.name. Map the PostgreSQL "public" schema to "dbo" consistently across all statements (e.g. public.orders -> [dbo].[orders]).
 6. Merged Triggers (Rule 8): If a PostgreSQL trigger function (RETURNS TRIGGER) and its CREATE TRIGGER statement are provided together as one merged unit, produce exactly ONE CREATE OR ALTER TRIGGER statement in T-SQL — combine the trigger's timing/events with the function's body logic. Use the inserted/deleted virtual tables in place of NEW/OLD. Do not produce a separate function or procedure object for trigger logic. Ensure the trigger logic is set-based (query [inserted] and [deleted] tables, rather than assuming single-row execution via FOR EACH ROW which is unsupported).
@@ -57,6 +123,11 @@ Ensure that:
 13. Preserve the original logic, behavior, names, and types.
 14. If there are features that cannot be cleanly translated to T-SQL (e.g. Postgres arrays, enums, specific regex functions, external extensions), write a visible T-SQL comment block (-- WARNING: [Explanation]) inside the code right where the issue occurs to alert the user.
 15. Return ONLY the valid T-SQL script. DO NOT wrap the code in markdown code blocks (such as \`\`\`sql ... \`\`\`). Do not include any introductory or concluding text. Your entire response must be direct, executable T-SQL code.`;
+  }
+
+  if (validationFeedback) {
+    prompt += `\n\n⚠️ IMPORTANT: Your previous translation attempt failed validation check with the following error(s):\n${validationFeedback}\n\nPlease regenerate the T-SQL code, ensuring you address and fix all the errors listed above.`;
+  }
 
   try {
     const response = await fetch(url, {
@@ -94,7 +165,9 @@ Ensure that:
           originalSql,
           triggerFunctionSql,
           model,
-          apiVersion: 'v1beta'
+          apiVersion: 'v1beta',
+          sourceDialect,
+          validationFeedback
         });
       }
       
@@ -108,7 +181,9 @@ Ensure that:
           originalSql,
           triggerFunctionSql,
           model: 'gemini-3.1-flash-lite',
-          apiVersion: 'v1'
+          apiVersion: 'v1',
+          sourceDialect,
+          validationFeedback
         });
       }
       

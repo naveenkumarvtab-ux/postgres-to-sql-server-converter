@@ -32,12 +32,145 @@ const defaultTypeMap = {
  * Maps PostgreSQL data types to SQL Server equivalents.
  * Returns an object with the mapped type and any translation flags/warnings.
  */
-export function mapDataType(pgType, useUnicode = true) {
+export function mapDataType(pgType, useUnicode = true, dialect = 'postgres') {
   const cleanType = pgType.toLowerCase().trim();
   const result = {
     mappedType: '',
     warning: null
   };
+
+  if (dialect === 'oracle') {
+    // 1. VARCHAR2 / NVARCHAR2 / VARCHAR
+    let match = cleanType.match(/^(?:varchar2|nvarchar2|varchar)\s*\(\s*(\d+|max)\s*\)/i);
+    if (match) {
+      const len = match[1];
+      result.mappedType = useUnicode ? `NVARCHAR(${len})` : `VARCHAR(${len})`;
+      return result;
+    }
+
+    // 2. CHAR
+    match = cleanType.match(/^char\s*\(\s*(\d+)\s*\)/i);
+    if (match) {
+      const len = match[1];
+      result.mappedType = useUnicode ? `NCHAR(${len})` : `CHAR(${len})`;
+      return result;
+    }
+
+    // 3. NUMBER
+    match = cleanType.match(/^number\s*(?:\(\s*(\d+)\s*(?:,\s*(-?\d+))?\s*\))?/i);
+    if (match) {
+      const pStr = match[1];
+      const sStr = match[2];
+      
+      if (!pStr) {
+        result.mappedType = 'DECIMAL(38,10)';
+        result.warning = `Oracle 'NUMBER' with unspecified precision/scale mapped to DECIMAL(38,10).`;
+        return result;
+      }
+      
+      const p = parseInt(pStr, 10);
+      const s = sStr ? parseInt(sStr, 10) : 0;
+      
+      if (p === 1 && s === 0) {
+        result.mappedType = 'BIT';
+        result.warning = `Oracle 'NUMBER(1)' mapped to 'BIT'. Verify if boolean semantics are correct.`;
+      } else if (s === 0) {
+        if (p <= 4) {
+          result.mappedType = 'SMALLINT';
+        } else if (p <= 9) {
+          result.mappedType = 'INT';
+        } else if (p <= 18) {
+          result.mappedType = 'BIGINT';
+        } else {
+          result.mappedType = `DECIMAL(${p},0)`;
+        }
+      } else {
+        result.mappedType = `DECIMAL(${p},${s})`;
+      }
+      return result;
+    }
+
+    // 4. FLOAT / BINARY_FLOAT / BINARY_DOUBLE
+    if (cleanType === 'float' || cleanType.startsWith('float(') || cleanType === 'binary_float') {
+      result.mappedType = 'REAL';
+      return result;
+    }
+    if (cleanType === 'binary_double') {
+      result.mappedType = 'FLOAT(53)';
+      return result;
+    }
+
+    // 5. DATE
+    if (cleanType === 'date') {
+      result.mappedType = 'DATETIME2';
+      result.warning = `Oracle 'DATE' contains time components. Mapped to 'DATETIME2' to prevent truncation.`;
+      return result;
+    }
+
+    // 6. TIMESTAMP
+    if (cleanType.startsWith('timestamp') && !cleanType.includes('with')) {
+      result.mappedType = 'DATETIME2';
+      return result;
+    }
+
+    // 7. TIMESTAMP WITH TIME ZONE
+    if (cleanType.startsWith('timestamp') && cleanType.includes('time zone')) {
+      result.mappedType = 'DATETIMEOFFSET';
+      return result;
+    }
+
+    // 8. CLOB
+    if (cleanType === 'clob') {
+      result.mappedType = useUnicode ? 'NVARCHAR(MAX)' : 'VARCHAR(MAX)';
+      return result;
+    }
+
+    // 9. BLOB
+    if (cleanType === 'blob') {
+      result.mappedType = 'VARBINARY(MAX)';
+      return result;
+    }
+
+    // 10. RAW
+    match = cleanType.match(/^raw\s*\(\s*(\d+)\s*\)/i);
+    if (match) {
+      const len = match[1];
+      result.mappedType = `VARBINARY(${len})`;
+      return result;
+    }
+
+    // 11. LONG / LONG RAW
+    if (cleanType === 'long') {
+      result.mappedType = useUnicode ? 'NVARCHAR(MAX)' : 'VARCHAR(MAX)';
+      result.warning = `Oracle 'LONG' type mapped to ${result.mappedType}.`;
+      return result;
+    }
+    if (cleanType === 'long raw') {
+      result.mappedType = 'VARBINARY(MAX)';
+      result.warning = `Oracle 'LONG RAW' type mapped to VARBINARY(MAX).`;
+      return result;
+    }
+
+    // 12. ROWID / UROWID
+    if (cleanType === 'rowid' || cleanType === 'urowid') {
+      result.mappedType = 'NVARCHAR(4000)';
+      result.warning = `Oracle ROWID/UROWID mapped to NVARCHAR(4000). Avoid relying on row physical address; use primary keys.`;
+      return result;
+    }
+
+    // 13. XMLTYPE
+    if (cleanType === 'xmltype') {
+      result.mappedType = 'XML';
+      return result;
+    }
+
+    // 14. INTERVAL / SYS.AQ$_*
+    if (cleanType.startsWith('interval') || cleanType.startsWith('sys.aq$_')) {
+      result.mappedType = 'NVARCHAR(MAX)';
+      result.warning = `Oracle type '${pgType}' is not supported natively in SQL Server. Mapped as NVARCHAR placeholder.`;
+      return result;
+    }
+  }
 
   if (defaultTypeMap[cleanType]) {
     result.mappedType = defaultTypeMap[cleanType];
@@ -118,6 +251,9 @@ export function mapDefaultValue(pgDefault, mappedType, useUnicode = true) {
   if (!pgDefault) return null;
   
   let cleanDef = pgDefault.trim();
+  
+  // Convert Oracle sequence/sysdate defaults to T-SQL equivalents
+  cleanDef = applySqlConversionRules(cleanDef, useUnicode);
   
   // Remove cast suffix: value::type or (value)::type
   cleanDef = cleanDef.replace(/::[a-zA-Z0-9_\s"[\]]+/g, '');
@@ -248,7 +384,7 @@ export function translateTsqlCheckExpression(expr, warnings = []) {
   return cleanExpr;
 }
 
-export function translateColumn(colObj, useUnicode = true, enums = null, domains = null, composites = null) {
+export function translateColumn(colObj, useUnicode = true, enums = null, domains = null, composites = null, dialect = 'postgres') {
   const nameEsc = `[${colObj.name}]`;
   
   if (colObj.isComputed) {
@@ -295,7 +431,7 @@ export function translateColumn(colObj, useUnicode = true, enums = null, domains
   }
 
   if (domainInfo) {
-    const baseTypeMap = mapDataType(domainInfo.baseType, useUnicode);
+    const baseTypeMap = mapDataType(domainInfo.baseType, useUnicode, dialect);
     typeEsc = baseTypeMap.mappedType;
     warning = baseTypeMap.warning;
     
@@ -324,7 +460,7 @@ export function translateColumn(colObj, useUnicode = true, enums = null, domains
     enumCheck = ` CHECK (${nameEsc} IN (${formattedValues}))`;
     warning = `Column [${colObj.name}] references custom enum type '${colObj.type}'. Generated ${typeEsc} type with an inline CHECK constraint.`;
   } else {
-    const typeMap = mapDataType(colObj.type, useUnicode);
+    const typeMap = mapDataType(colObj.type, useUnicode, dialect);
     typeEsc = typeMap.mappedType;
     warning = typeMap.warning;
   }
@@ -499,7 +635,7 @@ export function translateTableConstraint(constraintText, warnings = null) {
  * Automagically translates classified objects into T-SQL.
  * PL/pgSQL objects will be returned with a tag indicating they require AI translation.
  */
-export function translateObject(obj, useUnicode = true, metadata = null, enums = null, domains = null, composites = null, schemaMap = { 'public': 'dbo' }, tableColumnsMap = {}, deploymentMode = 'migration', sqlServerVersion = '2017+') {
+export function translateObject(obj, useUnicode = true, metadata = null, enums = null, domains = null, composites = null, schemaMap = { 'public': 'dbo' }, tableColumnsMap = {}, deploymentMode = 'migration', sqlServerVersion = '2017+', dialect = 'postgres') {
   const result = {
     tsql: '',
     warnings: [],
@@ -562,7 +698,7 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
       for (const col of obj.parsed.columns) {
         // Apply overrides from metadata if match found
         const overridenCol = applyMetadataOverrides(col, obj.name, metadata);
-        const trans = translateColumn(overridenCol, useUnicode, enums, domains, composites);
+        const trans = translateColumn(overridenCol, useUnicode, enums, domains, composites, dialect);
         colsTsql.push(`    ${trans.tsql}`);
         if (trans.warning) {
           result.warnings.push(`Table [${obj.schema}].[${obj.name}], Column [${overridenCol.name}]: ${trans.warning}`);
@@ -575,7 +711,14 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
         }
       }
 
-      if (deploymentMode === 'deployment') {
+      if (obj.parsed.isGlobalTemp) {
+        result.tsql = `-- NOTE: Converted from Oracle GLOBAL TEMPORARY TABLE.\n` +
+                      `-- Oracle GTT definitions are permanent/schema-level with session-scoped data;\n` +
+                      `-- SQL Server local temp tables (#TableName) don't persist independently of the session that creates them.\n` +
+                      `CREATE TABLE #[${obj.name}] (\n` +
+                      `${colsTsql.join(',\n')}\n` +
+                      `);\nGO`;
+      } else if (deploymentMode === 'deployment') {
         result.tsql = `IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[${obj.schema}].[${obj.name}]') AND type in (N'U'))\nBEGIN\n    CREATE TABLE [${obj.schema}].[${obj.name}] (\n    ${colsTsql.join(',\n    ')}\n    );\nEND\nGO`;
       } else {
         result.tsql = `DROP TABLE IF EXISTS [${obj.schema}].[${obj.name}];\nGO\nCREATE TABLE [${obj.schema}].[${obj.name}] (\n${colsTsql.join(',\n')}\n);\nGO`;
@@ -694,39 +837,68 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
       break;
     }
 
+    case 'ORACLE_PACKAGE_SPEC': {
+      result.requiresAi = false;
+      result.tsql = `-- ⚠️ NOT CONVERTED: Oracle Package Specification '${obj.name}' is not natively supported in SQL Server.\n` +
+                    `-- SQL Server has no equivalent grouping construct. Members declared inside the package body have been extracted as standalone objects.\n\n` +
+                    `/* ORIGINAL ORACLE CODE:\n${obj.raw}\n*/`;
+      result.warnings.push(`Oracle Package Specification [${obj.schema}].[${obj.name}] has no direct T-SQL equivalent.`);
+      break;
+    }
+
+    case 'ORACLE_PACKAGE_BODY': {
+      result.requiresAi = false;
+      result.tsql = `-- ⚠️ NOT CONVERTED: Oracle Package Body '${obj.name}' itself is not natively supported in SQL Server.\n` +
+                    `-- Its constituent functions/procedures have been split and parsed as standalone database objects (prefixed with ${obj.name}_).\n\n` +
+                    `/* ORIGINAL ORACLE CODE:\n${obj.raw}\n*/`;
+      result.warnings.push(`Oracle Package Body [${obj.schema}].[${obj.name}] split into standalone functions and procedures.`);
+      break;
+    }
+
+    case 'ORACLE_SYNONYM': {
+      result.requiresAi = false;
+      result.tsql = `-- ⚠️ NOT CONVERTED: Oracle Synonym '${obj.name}' pointing to '${obj.parsed.forObject || 'unknown'}' is not natively supported.\n` +
+                    `-- T-SQL has no public/shared synonym equivalent. Recommended: use standard VIEWs, aliases, or schema-qualified tables.\n\n` +
+                    `/* ORIGINAL ORACLE CODE:\n${obj.raw}\n*/`;
+      result.warnings.push(`Oracle Synonym [${obj.schema}].[${obj.name}] is not converted. Synonyms have no direct T-SQL equivalent.`);
+      break;
+    }
+
     case 'VIEW': {
       if (obj.parsed.isMaterializedView) {
         result.requiresAi = false;
-        result.tsql = `-- ⚠️ NOT CONVERTED — MANUAL REVIEW REQUIRED: PostgreSQL MATERIALIZED VIEW has no direct SQL Server equivalent.\n` +
+        result.tsql = `-- ⚠️ NOT CONVERTED — MANUAL REVIEW REQUIRED: ${dialect === 'oracle' ? 'Oracle' : 'PostgreSQL'} MATERIALIZED VIEW has no direct SQL Server equivalent.\n` +
                       `-- Closest equivalent is a SCHEMABINDING view with a UNIQUE CLUSTERED INDEX ('indexed view'),\n` +
                       `-- which has stricter rules (no outer joins, only deterministic aggregates, all referenced objects must use two-part names).\n` +
                       `-- Recommended: manually redesign as an indexed view if requirements allow, or use a scheduled job to populate a real table instead.\n\n` +
-                      `/* ORIGINAL POSTGRES CODE:\n${obj.raw}\n*/`;
+                      `/* ORIGINAL CODE:\n${obj.raw}\n*/`;
         result.warnings.push(`Materialized View [${obj.schema}].[${obj.name}] is not converted. Materialized views have no direct T-SQL equivalent.`);
         break;
       }
       result.requiresAi = true;
-      result.tsql = `-- PENDING AI TRANSLATION --\n-- The original VIEW object '${obj.name}' is written in PostgreSQL logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL POSTGRES CODE:\n${obj.raw}\n*/`;
-      result.warnings.push(`View '${obj.name}' is a PL/pgSQL database object. It requires translation by the AI model.`);
+      result.tsql = `-- PENDING AI TRANSLATION --\n-- The original VIEW object '${obj.name}' is written in ${dialect === 'oracle' ? 'Oracle SQL' : 'PostgreSQL'} logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+      result.warnings.push(`View '${obj.name}' is a ${dialect === 'oracle' ? 'Oracle' : 'PL/pgSQL'} database object. It requires translation by the AI model.`);
       break;
     }
 
     case 'PROCEDURE': {
+      const packagePrefix = obj.parsed.isPackageMember ? `-- originally part of package ${obj.parsed.packageName}\n` : '';
       result.requiresAi = true;
-      result.tsql = `-- PENDING AI TRANSLATION --\n-- The original PROCEDURE object '${obj.name}' is written in PostgreSQL logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL POSTGRES CODE:\n${obj.raw}\n*/`;
-      result.warnings.push(`Procedure '${obj.name}' is a PL/pgSQL database object. It requires translation by the AI model.`);
+      result.tsql = `${packagePrefix}-- PENDING AI TRANSLATION --\n-- The original PROCEDURE object '${obj.name}' is written in ${dialect === 'oracle' ? 'Oracle PL/SQL' : 'PostgreSQL PL/pgSQL'} logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+      result.warnings.push(`Procedure '${obj.name}' is a ${dialect === 'oracle' ? 'Oracle' : 'PL/pgSQL'} database object. It requires translation by the AI model.`);
       break;
     }
 
     case 'FUNCTION': {
+      const packagePrefix = obj.parsed.isPackageMember ? `-- originally part of package ${obj.parsed.packageName}\n` : '';
       if (obj.parsed.isMergedIntoTrigger) {
         result.requiresAi = false;
         result.tsql = `-- Merged into trigger [${obj.parsed.mergedTriggerName}] -- no separate object needed.`;
         result.warnings.push(`Trigger function '${obj.name}' was merged into trigger '${obj.parsed.mergedTriggerName}'. No separate object is generated.`);
       } else {
         result.requiresAi = true;
-        result.tsql = `-- PENDING AI TRANSLATION --\n-- The original FUNCTION object '${obj.name}' is written in PostgreSQL logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL POSTGRES CODE:\n${obj.raw}\n*/`;
-        result.warnings.push(`Function '${obj.name}' is a PL/pgSQL database object. It requires translation by the AI model.`);
+        result.tsql = `${packagePrefix}-- PENDING AI TRANSLATION --\n-- The original FUNCTION object '${obj.name}' is written in ${dialect === 'oracle' ? 'Oracle PL/SQL' : 'PostgreSQL PL/pgSQL'} logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+        result.warnings.push(`Function '${obj.name}' is a ${dialect === 'oracle' ? 'Oracle' : 'PL/pgSQL'} database object. It requires translation by the AI model.`);
       }
       break;
     }
@@ -738,8 +910,8 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
         result.warnings.push(`Trigger '${obj.name}' references PL/pgSQL function '${obj.parsed.triggerFunctionName}'. Merged both statements into a single T-SQL CREATE TRIGGER conversion unit.`);
       } else {
         result.requiresAi = true;
-        result.tsql = `-- PENDING AI TRANSLATION --\n-- The original TRIGGER object '${obj.name}' is written in PostgreSQL logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL POSTGRES CODE:\n${obj.raw}\n*/`;
-        result.warnings.push(`Trigger '${obj.name}' is a PL/pgSQL database object. It requires translation by the AI model.`);
+        result.tsql = `-- PENDING AI TRANSLATION --\n-- The original TRIGGER object '${obj.name}' is written in ${dialect === 'oracle' ? 'Oracle PL/SQL' : 'PostgreSQL'} logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+        result.warnings.push(`Trigger '${obj.name}' is a ${dialect === 'oracle' ? 'Oracle' : 'PL/pgSQL'} database object. It requires translation by the AI model.`);
       }
       break;
     }
@@ -759,6 +931,13 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
     case 'CALL': {
       // Standalone CALL statements are translated to EXEC statements
       result.tsql = obj.raw;
+      break;
+    }
+
+    case 'PLSQL_BLOCK': {
+      result.requiresAi = true;
+      result.tsql = `-- PENDING AI TRANSLATION --\n-- The original anonymous PL/SQL block is written in Oracle logic.\n-- Click 'AI Translate' to convert this block to a SQL Server (T-SQL) batch.\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+      result.warnings.push(`Anonymous PL/SQL block detected. It requires translation by the AI model.`);
       break;
     }
 
@@ -1222,6 +1401,34 @@ export function translateIntervals(sql) {
 
 export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'public': 'dbo' }, tableColumnsMap = {}, sqlServerVersion = '2017+') {
   let clean = sql;
+
+  // Oracle Sequence NEXTVAL/CURRVAL translation
+  const oracleNextvalRegex = /(\b[a-zA-Z0-9_\.\[\]]+)\.NEXTVAL\b/gi;
+  clean = clean.replace(oracleNextvalRegex, (match, seqRef) => {
+    let cleanSeq = seqRef.replace(/[\[\]]/g, '').trim();
+    if (!cleanSeq.includes('.')) {
+      cleanSeq = `dbo.${cleanSeq}`;
+    }
+    const parts = cleanSeq.split('.');
+    return `NEXT VALUE FOR [${parts[0]}].[${parts[1]}]`;
+  });
+
+  const oracleCurrvalRegex = /(\b[a-zA-Z0-9_\.\[\]]+)\.CURRVAL\b/gi;
+  clean = clean.replace(oracleCurrvalRegex, (match, seqRef) => {
+    let cleanSeq = seqRef.replace(/[\[\]]/g, '').trim();
+    if (!cleanSeq.includes('.')) {
+      cleanSeq = `dbo.${cleanSeq}`;
+    }
+    const parts = cleanSeq.split('.');
+    return `(SELECT current_value FROM sys.sequences WHERE object_id = OBJECT_ID('[${parts[0]}].[${parts[1]}]'))`;
+  });
+
+  // Oracle SYSDATE and SYSTIMESTAMP translation
+  clean = clean.replace(/\bSYSDATE\b/gi, 'GETDATE()');
+  clean = clean.replace(/\bSYSTIMESTAMP\b/gi, 'SYSDATETIME()');
+
+  // Strip Oracle "FROM DUAL"
+  clean = clean.replace(/\bFROM\s+DUAL\b/gi, '');
 
   // 1. Schema Mapping (e.g. [public].tableName or public.tableName or public.functionName)
   for (const [oldSchema, newSchema] of Object.entries(schemaMap)) {

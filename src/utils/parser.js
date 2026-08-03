@@ -50,7 +50,54 @@ export function parseSchemaQualifiedName(fullName) {
  * Splits SQL script into discrete statements, handling single/double quotes,
  * dollar-quoted strings ($$ or $tag$), and line/block comments.
  */
-export function splitSqlStatements(sqlContent) {
+export function splitOracleStatements(sqlContent) {
+  const lines = sqlContent.split(/\r?\n/);
+  const statements = [];
+  let currentBlock = [];
+  let insidePlsql = false;
+  
+  for (let line of lines) {
+    const trimmed = line.trim();
+    const upperTrimmed = trimmed.toUpperCase();
+    
+    if (upperTrimmed.startsWith('CREATE PACKAGE') || 
+        upperTrimmed.startsWith('CREATE OR REPLACE PACKAGE') ||
+        upperTrimmed.startsWith('CREATE PROCEDURE') ||
+        upperTrimmed.startsWith('CREATE OR REPLACE PROCEDURE') ||
+        upperTrimmed.startsWith('CREATE FUNCTION') ||
+        upperTrimmed.startsWith('CREATE OR REPLACE FUNCTION') ||
+        upperTrimmed.startsWith('CREATE TRIGGER') ||
+        upperTrimmed.startsWith('CREATE OR REPLACE TRIGGER') ||
+        upperTrimmed.startsWith('DECLARE') ||
+        upperTrimmed.startsWith('BEGIN')) {
+      insidePlsql = true;
+    }
+    
+    if (trimmed === '/') {
+      if (currentBlock.length > 0) {
+        statements.push(currentBlock.join('\n').trim());
+        currentBlock = [];
+      }
+      insidePlsql = false;
+    } else {
+      currentBlock.push(line);
+      if (!insidePlsql && trimmed.endsWith(';')) {
+        statements.push(currentBlock.join('\n').trim());
+        currentBlock = [];
+      }
+    }
+  }
+  if (currentBlock.length > 0) {
+    statements.push(currentBlock.join('\n').trim());
+  }
+  return statements.filter(s => s.trim().length > 0);
+}
+
+export function splitSqlStatements(sqlContent, dialect = 'postgres') {
+  if (dialect === 'oracle') {
+    return splitOracleStatements(sqlContent);
+  }
+
   const statements = [];
   let currentStatement = '';
   let state = 'NORMAL'; // NORMAL, SINGLE_QUOTE, DOUBLE_QUOTE, DOLLAR_QUOTE, SINGLE_COMMENT, MULTI_COMMENT
@@ -182,11 +229,87 @@ export function splitParenthesesBody(bodyText) {
   return items;
 }
 
+function stripAllComments(sql) {
+  let clean = '';
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inSingleComment = false;
+  let inMultiComment = false;
+  
+  for (let i = 0; i < sql.length; i++) {
+    const char = sql[i];
+    const nextChar = sql[i + 1] || '';
+    
+    if (inSingleComment) {
+      if (char === '\n' || char === '\r') {
+        inSingleComment = false;
+        clean += char;
+      }
+    } else if (inMultiComment) {
+      if (char === '*' && nextChar === '/') {
+        inMultiComment = false;
+        i++; // skip '/'
+      }
+    } else if (inSingleQuote) {
+      if (char === "'" && sql[i - 1] !== '\\') {
+        inSingleQuote = false;
+      }
+      clean += char;
+    } else if (inDoubleQuote) {
+      if (char === '"' && sql[i - 1] !== '\\') {
+        inDoubleQuote = false;
+      }
+      clean += char;
+    } else {
+      if (char === '-' && nextChar === '-') {
+        inSingleComment = true;
+        i++; // skip second '-'
+      } else if (char === '/' && nextChar === '*') {
+        inMultiComment = true;
+        i++; // skip '*'
+      } else if (char === "'") {
+        inSingleQuote = true;
+        clean += char;
+      } else if (char === '"') {
+        inDoubleQuote = true;
+        clean += char;
+      } else {
+        clean += char;
+      }
+    }
+  }
+  return clean;
+}
+
+function stripLeadingComments(sql) {
+  let clean = sql.trim();
+  while (true) {
+    if (clean.startsWith('--')) {
+      const newlineIdx = clean.indexOf('\n');
+      if (newlineIdx === -1) {
+        return '';
+      }
+      clean = clean.substring(newlineIdx + 1).trim();
+    } else if (clean.startsWith('/*')) {
+      const endCommentIdx = clean.indexOf('*/');
+      if (endCommentIdx === -1) {
+        return '';
+      }
+      clean = clean.substring(endCommentIdx + 2).trim();
+    } else {
+      break;
+    }
+  }
+  return clean;
+}
+
 /**
  * Categorize a single SQL statement and parse its structure.
  */
-export function classifyStatement(rawSql) {
-  const cleanSql = rawSql.replace(/\s+/g, ' ').trim();
+export function classifyStatement(rawSql, dialect = 'postgres') {
+  const commentlessSql = stripAllComments(rawSql);
+  const commandSql = stripLeadingComments(commentlessSql);
+  const cleanSql = commandSql.replace(/\s+/g, ' ').trim();
   const upperSql = cleanSql.toUpperCase();
   
   const obj = {
@@ -199,6 +322,98 @@ export function classifyStatement(rawSql) {
     parsed: {},
     warnings: [],
   };
+
+  // Oracle-specific object classifications
+  if (dialect === 'oracle') {
+    // Oracle Synonyms
+    if (upperSql.startsWith('CREATE SYNONYM ') || upperSql.startsWith('CREATE OR REPLACE SYNONYM ') || upperSql.startsWith('CREATE PUBLIC SYNONYM ') || upperSql.startsWith('CREATE OR REPLACE PUBLIC SYNONYM ')) {
+      obj.type = 'ORACLE_SYNONYM';
+      const match = cleanSql.match(/CREATE\s+(?:OR\s+REPLACE\s+)?(?:PUBLIC\s+)?SYNONYM\s+([^\s;]+)\s+FOR\s+([^\s;]+)/i);
+      if (match) {
+        const qname = parseSchemaQualifiedName(match[1]);
+        obj.name = qname.name;
+        obj.schema = qname.schema;
+        obj.parsed = {
+          forObject: match[2]
+        };
+      }
+      return obj;
+    }
+
+    // Oracle Package Specification and Body
+    if (upperSql.includes('CREATE PACKAGE ') || upperSql.includes('CREATE OR REPLACE PACKAGE ')) {
+      const isBody = upperSql.includes(' BODY ');
+      obj.type = isBody ? 'ORACLE_PACKAGE_BODY' : 'ORACLE_PACKAGE_SPEC';
+      const match = cleanSql.match(/CREATE\s+(?:OR\s+REPLACE\s+)?PACKAGE\s+(?:BODY\s+)?([^\s;(]+)/i);
+      if (match) {
+        const qname = parseSchemaQualifiedName(match[1]);
+        obj.name = qname.name;
+        obj.schema = qname.schema;
+      }
+      return obj;
+    }
+
+    // Oracle Bitmap index
+    if (upperSql.includes('CREATE BITMAP INDEX ')) {
+      obj.type = 'INDEX';
+      const match = cleanSql.match(/CREATE\s+BITMAP\s+INDEX\s+([^\s;]+)/i);
+      if (match) {
+        obj.name = cleanIdentifier(match[1]);
+      }
+      const onIndex = upperSql.indexOf(' ON ');
+      if (onIndex !== -1) {
+        const afterOn = cleanSql.substring(onIndex + 4).trim();
+        const tblMatch = afterOn.match(/^([^\s(]+)/);
+        if (tblMatch) {
+          const tblQname = parseSchemaQualifiedName(tblMatch[1]);
+          obj.schema = tblQname.schema;
+          obj.parsed = {
+            tableName: tblQname.name,
+            using: 'bitmap',
+            unique: false,
+            columns: ''
+          };
+          const firstParen = afterOn.indexOf('(');
+          const lastParen = afterOn.lastIndexOf(')');
+          if (firstParen !== -1 && lastParen !== -1) {
+            obj.parsed.columns = afterOn.substring(firstParen + 1, lastParen).trim();
+          }
+        }
+      }
+      return obj;
+    }
+
+    // Oracle Trigger
+    if (upperSql.startsWith('CREATE TRIGGER ') || upperSql.startsWith('CREATE OR REPLACE TRIGGER ')) {
+      obj.type = 'TRIGGER';
+      const match = cleanSql.match(/CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER\s+([^\s;]+)\s+(BEFORE|AFTER|INSTEAD\s+OF)\s+([\w\s,]+)\s+ON\s+([^\s;]+)/i);
+      if (match) {
+        obj.name = cleanIdentifier(match[1]);
+        const tblQname = parseSchemaQualifiedName(match[4]);
+        obj.schema = tblQname.schema;
+        obj.parsed = {
+          tableName: tblQname.name,
+          timing: match[2].toUpperCase(),
+          events: match[3].toUpperCase(),
+          isOracleTrigger: true
+        };
+      } else {
+        const fallbackMatch = cleanSql.match(/CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER\s+([^\s;]+)/i);
+        if (fallbackMatch) {
+          obj.name = cleanIdentifier(fallbackMatch[1]);
+        }
+      }
+      return obj;
+    }
+
+    // Oracle Anonymous PL/SQL Block
+    if (upperSql.startsWith('DECLARE ') || upperSql.startsWith('BEGIN ') || upperSql.startsWith('BEGIN;') || upperSql === 'BEGIN') {
+      obj.type = 'PLSQL_BLOCK';
+      obj.name = 'anonymous_block';
+      obj.schema = 'public';
+      return obj;
+    }
+  }
 
   // 1.5 CREATE EXTENSION
   if (upperSql.startsWith('CREATE EXTENSION ')) {
@@ -312,12 +527,13 @@ export function classifyStatement(rawSql) {
   }
 
   // 3. Table
-  if (upperSql.startsWith('CREATE TABLE ')) {
+  const tableRegex = /^CREATE\s+(?:GLOBAL\s+TEMPORARY\s+|LOCAL\s+TEMPORARY\s+|TEMP\s+|TEMPORARY\s+)?TABLE\s+/i;
+  if (tableRegex.test(cleanSql)) {
     obj.type = 'TABLE';
     
     // Check if it's a declarative partition table (PARTITION OF)
     if (upperSql.includes(' PARTITION OF ')) {
-      const nameMatch = cleanSql.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s;(]+)/i);
+      const nameMatch = cleanSql.match(/CREATE\s+(?:GLOBAL\s+TEMPORARY\s+|LOCAL\s+TEMPORARY\s+|TEMP\s+|TEMPORARY\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s;(]+)/i);
       if (nameMatch) {
         const qname = parseSchemaQualifiedName(nameMatch[1]);
         obj.name = qname.name;
@@ -328,7 +544,7 @@ export function classifyStatement(rawSql) {
     }
 
     // Look for matching parentheses body
-    const match = cleanSql.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s;(]+)\s*\((.*)\)/i);
+    const match = cleanSql.match(/CREATE\s+(?:GLOBAL\s+TEMPORARY\s+|LOCAL\s+TEMPORARY\s+|TEMP\s+|TEMPORARY\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s;(]+)\s*\((.*)\)/i);
     if (match) {
       const qname = parseSchemaQualifiedName(match[1]);
       obj.name = qname.name;
@@ -357,15 +573,21 @@ export function classifyStatement(rawSql) {
       
       obj.parsed = {
         columns,
-        constraints
+        constraints,
+        isGlobalTemp: upperSql.includes('GLOBAL TEMPORARY'),
+        isLocalTemp: upperSql.includes('LOCAL TEMPORARY') || upperSql.includes(' TEMP ') || upperSql.includes(' TEMPORARY ')
       };
     } else {
       // Direct fall back if parenthesis splitting fails
-      const fallbackMatch = cleanSql.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s;(]+)/i);
+      const fallbackMatch = cleanSql.match(/CREATE\s+(?:GLOBAL\s+TEMPORARY\s+|LOCAL\s+TEMPORARY\s+|TEMP\s+|TEMPORARY\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s;(]+)/i);
       if (fallbackMatch) {
         const qname = parseSchemaQualifiedName(fallbackMatch[1]);
         obj.name = qname.name;
         obj.schema = qname.schema;
+        obj.parsed = {
+          isGlobalTemp: upperSql.includes('GLOBAL TEMPORARY'),
+          isLocalTemp: upperSql.includes('LOCAL TEMPORARY') || upperSql.includes(' TEMP ') || upperSql.includes(' TEMPORARY ')
+        };
       }
     }
     return obj;
@@ -511,10 +733,9 @@ export function classifyStatement(rawSql) {
   }
 
   // 8. Trigger
-  if (upperSql.startsWith('CREATE TRIGGER ')) {
+  if (upperSql.startsWith('CREATE TRIGGER ') || upperSql.startsWith('CREATE OR REPLACE TRIGGER ')) {
     obj.type = 'TRIGGER';
-    // Match: CREATE TRIGGER name BEFORE/AFTER/INSTEAD OF event ON table ... EXECUTE FUNCTION/PROCEDURE func_name()
-    const match = cleanSql.match(/CREATE\s+TRIGGER\s+([^\s;]+)\s+(BEFORE|AFTER|INSTEAD\s+OF)\s+([\w\s,]+)\s+ON\s+([^\s;]+)\s+.*\s+EXECUTE\s+(?:FUNCTION|PROCEDURE)\s+([^\s;(]+)/i);
+    const match = cleanSql.match(/CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER\s+([^\s;]+)\s+(BEFORE|AFTER|INSTEAD\s+OF)\s+([\w\s,]+)\s+ON\s+([^\s;]+)\s+.*\s+EXECUTE\s+(?:FUNCTION|PROCEDURE)\s+([^\s;(]+)/i);
     if (match) {
       obj.name = cleanIdentifier(match[1]);
       const tblQname = parseSchemaQualifiedName(match[4]);
@@ -806,4 +1027,62 @@ function extractConstraintType(text) {
   if (upper.includes('UNIQUE')) return 'UNIQUE';
   if (upper.includes('CHECK')) return 'CHECK';
   return 'OTHER';
+}
+
+export function splitOraclePackageBody(rawSql, packageName, schema = 'public') {
+  const upperSql = rawSql.toUpperCase();
+  const startIdx = upperSql.indexOf('BODY ');
+  if (startIdx === -1) return [];
+
+  const cleanBody = rawSql
+    .replace(/--.*$/gm, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+
+  const subObjects = [];
+  const regex = /\b(PROCEDURE|FUNCTION)\s+(\w+)/gi;
+  let match;
+  const matches = [];
+
+  while ((match = regex.exec(cleanBody)) !== null) {
+    matches.push({
+      type: match[1].toUpperCase(),
+      name: match[2],
+      index: match.index
+    });
+  }
+
+  for (let i = 0; i < matches.length; i++) {
+    const current = matches[i];
+    const nextIndex = i + 1 < matches.length ? matches[i + 1].index : cleanBody.length;
+    
+    let blockText = cleanBody.substring(current.index, nextIndex).trim();
+    if (blockText.endsWith('/')) {
+      blockText = blockText.substring(0, blockText.length - 1).trim();
+    }
+    if (blockText.endsWith(';')) {
+      blockText = blockText.substring(0, blockText.length - 1).trim();
+    }
+
+    const pfxName = `${packageName}_${current.name}`;
+    const nameRegex = new RegExp(`\\b(${current.type})\\s+${current.name}\\b`, 'i');
+    const prefixedBlockText = blockText.replace(nameRegex, `$1 ${pfxName}`);
+
+    const subObj = {
+      id: Math.random().toString(36).substring(2, 9),
+      type: current.type,
+      name: pfxName,
+      schema: schema,
+      raw: `CREATE OR REPLACE ${prefixedBlockText}`,
+      clean: `CREATE OR REPLACE ${prefixedBlockText.replace(/\s+/g, ' ').trim()}`,
+      parsed: {
+        isPackageMember: true,
+        packageName: packageName,
+        originalName: current.name
+      },
+      warnings: []
+    };
+    subObjects.push(subObj);
+  }
+
+  return subObjects;
 }

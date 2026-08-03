@@ -7,7 +7,7 @@ import SummaryReport from './components/SummaryReport';
 import AuthModal from './components/AuthModal';
 import ResetPasswordModal from './components/ResetPasswordModal';
 import { supabase } from './utils/supabaseClient';
-import { splitSqlStatements, classifyStatement } from './utils/parser';
+import { splitSqlStatements, classifyStatement, splitOraclePackageBody } from './utils/parser';
 import { translateObject, resolveDependencies } from './utils/translator';
 import { translatePLpgSQLWithAI } from './utils/gemini';
 import { validateMigration } from './utils/validator';
@@ -23,6 +23,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [authBypassed, setAuthBypassed] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
+  const [sourceDialect, setSourceDialect] = useState('postgres'); // postgres | oracle
   const [isResettingPassword, setIsResettingPassword] = useState(false);
   const [resetToken, setResetToken] = useState(null);
   const [validationReport, setValidationReport] = useState(null);
@@ -228,7 +229,8 @@ export default function App() {
             { 'public': 'dbo' },
             tableColumnsMap,
             updated.deploymentMode || 'migration',
-            updated.sqlServerVersion || '2017+'
+            updated.sqlServerVersion || '2017+',
+            sourceDialect
           );
           return {
             classified,
@@ -242,19 +244,32 @@ export default function App() {
     });
   };
 
-  const handleFilesUploaded = (sqlContent, fileName, uploadedMetadata) => {
+  const handleFilesUploaded = (sqlContent, fileName, uploadedMetadata, uploadedDialect = 'postgres') => {
     setMetadata(uploadedMetadata);
+    setSourceDialect(uploadedDialect);
     
     // 1. Split SQL statements safely
-    const rawStatements = splitSqlStatements(sqlContent);
+    const rawStatements = splitSqlStatements(sqlContent, uploadedDialect);
     
     // 2. First pass: classify statements and gather all custom enums
-    const classifiedStatements = rawStatements.map(stmt => classifyStatement(stmt));
+    const classifiedStatements = rawStatements.map(stmt => classifyStatement(stmt, uploadedDialect));
     
+    // 2a. If dialect is Oracle, splice package body sub-members
+    let finalClassStatements = [];
+    classifiedStatements.forEach(obj => {
+      if (obj.type === 'ORACLE_PACKAGE_BODY') {
+        finalClassStatements.push(obj);
+        const members = splitOraclePackageBody(obj.raw, obj.name, obj.schema);
+        finalClassStatements.push(...members);
+      } else {
+        finalClassStatements.push(obj);
+      }
+    });
+
     const enumsMap = {};
     const domainsMap = {};
     const compositesMap = {};
-    classifiedStatements.forEach(obj => {
+    finalClassStatements.forEach(obj => {
       if (obj.type === 'ENUM') {
         enumsMap[obj.name.toLowerCase()] = obj.parsed.values;
       } else if (obj.type === 'DOMAIN') {
@@ -266,35 +281,35 @@ export default function App() {
       }
     });
 
-    // 2b. Merge Trigger functions with Trigger definitions
-    const triggerFunctions = classifiedStatements.filter(obj => obj.type === 'FUNCTION' && obj.parsed.returnsTrigger === true);
-    
-    classifiedStatements.forEach(obj => {
-      if (obj.type === 'TRIGGER' && obj.parsed.triggerFunctionName) {
-        const matchingFunc = triggerFunctions.find(func => {
-          const sameName = func.name.toLowerCase() === obj.parsed.triggerFunctionName.toLowerCase();
-          const sameSchema = func.schema.toLowerCase() === obj.parsed.triggerFunctionSchema.toLowerCase();
-          
-          // Fallback if the trigger's referenced function schema is unqualified ('public')
-          // in which case it resides in either 'public' or the trigger's own schema
-          const isTriggerUnqualified = obj.parsed.triggerFunctionSchema.toLowerCase() === 'public';
-          const triggerSchemaMatches = func.schema.toLowerCase() === obj.schema.toLowerCase();
-          
-          return sameName && (sameSchema || (isTriggerUnqualified && triggerSchemaMatches));
-        });
-        if (matchingFunc) {
-          obj.parsed.functionBody = matchingFunc.raw;
-          matchingFunc.parsed.isMergedIntoTrigger = true;
-          matchingFunc.parsed.mergedTriggerName = obj.name;
+    // 2b. Merge Trigger functions with Trigger definitions (Postgres only)
+    if (uploadedDialect === 'postgres') {
+      const triggerFunctions = finalClassStatements.filter(obj => obj.type === 'FUNCTION' && obj.parsed.returnsTrigger === true);
+      
+      finalClassStatements.forEach(obj => {
+        if (obj.type === 'TRIGGER' && obj.parsed.triggerFunctionName) {
+          const matchingFunc = triggerFunctions.find(func => {
+            const sameName = func.name.toLowerCase() === obj.parsed.triggerFunctionName.toLowerCase();
+            const sameSchema = func.schema.toLowerCase() === obj.parsed.triggerFunctionSchema.toLowerCase();
+            
+            const isTriggerUnqualified = obj.parsed.triggerFunctionSchema.toLowerCase() === 'public';
+            const triggerSchemaMatches = func.schema.toLowerCase() === obj.schema.toLowerCase();
+            
+            return sameName && (sameSchema || (isTriggerUnqualified && triggerSchemaMatches));
+          });
+          if (matchingFunc) {
+            obj.parsed.functionBody = matchingFunc.raw;
+            matchingFunc.parsed.isMergedIntoTrigger = true;
+            matchingFunc.parsed.mergedTriggerName = obj.name;
+          }
         }
-      }
-    });
+      });
+    }
 
-    setRawClassified(classifiedStatements);
+    setRawClassified(finalClassStatements);
 
     // Gather all columns map from parsed tables
     const tableColumnsMap = {};
-    classifiedStatements.forEach(obj => {
+    finalClassStatements.forEach(obj => {
       if (obj.type === 'TABLE' && obj.parsed && obj.parsed.columns) {
         const key = `${obj.schema}.${obj.name}`.toLowerCase();
         tableColumnsMap[key] = obj.parsed.columns.map(c => c.name);
@@ -317,8 +332,8 @@ export default function App() {
       }
     }
 
-    // 3. Second pass: translate statements passing the enums context
-    const processedObjects = classifiedStatements.map(classified => {
+    // 3. Second pass: translate statements passing the context
+    const processedObjects = finalClassStatements.map(classified => {
       const translation = translateObject(
         classified, 
         settings.useUnicode, 
@@ -329,7 +344,8 @@ export default function App() {
         { 'public': 'dbo' },
         tableColumnsMap,
         settings.deploymentMode || 'migration',
-        settings.sqlServerVersion || '2017+'
+        settings.sqlServerVersion || '2017+',
+        uploadedDialect
       );
       return {
         classified,
@@ -356,6 +372,67 @@ export default function App() {
     }));
   };
 
+  const translateAndSelfCorrect = async (objToTranslate, currentObjects, maxRetries = 2) => {
+    let retries = 0;
+    let validationFeedback = null;
+    let translatedSql = '';
+
+    const triggerFunctionSql = objToTranslate.classified.type === 'TRIGGER' ? 
+                               objToTranslate.classified.parsed.functionBody : null;
+
+    while (retries <= maxRetries) {
+      translatedSql = await translatePLpgSQLWithAI({
+        apiKey: settings.apiKey,
+        objectType: objToTranslate.classified.type,
+        objectName: objToTranslate.classified.name,
+        originalSql: objToTranslate.classified.raw,
+        triggerFunctionSql,
+        model: settings.model,
+        sourceDialect: sourceDialect,
+        validationFeedback: validationFeedback
+      });
+
+      let finalTsql = translatedSql.trim();
+      if (!finalTsql.toUpperCase().endsWith('GO')) {
+        finalTsql += '\nGO';
+      }
+
+      // Check validation
+      const testObjects = currentObjects.map(o => {
+        if (o.classified.id === objToTranslate.classified.id) {
+          return {
+            schema: o.classified.schema,
+            name: o.classified.name,
+            type: o.classified.type,
+            tsql: finalTsql,
+            parsed: o.classified.parsed
+          };
+        }
+        return {
+          schema: o.classified.schema,
+          name: o.classified.name,
+          type: o.classified.type,
+          tsql: o.translation.tsql,
+          parsed: o.classified.parsed
+        };
+      });
+
+      const validationReport = validateMigration(testObjects);
+      const objLabel = `[${objToTranslate.classified.schema}].[${objToTranslate.classified.name}] (${objToTranslate.classified.type})`;
+      const objErrors = validationReport.errors.filter(e => e.objectName === objLabel);
+
+      if (objErrors.length === 0 || retries === maxRetries) {
+        return finalTsql;
+      }
+
+      validationFeedback = objErrors.map(e => `- ${e.description}`).join('\n');
+      console.warn(`Validation failed for ${objToTranslate.classified.name}. Retrying... Errors:\n${validationFeedback}`);
+      retries++;
+    }
+
+    return translatedSql;
+  };
+
   const handleAiTranslateObject = async (id) => {
     const objToTranslate = objects.find(o => o.classified.id === id);
     if (!objToTranslate) return;
@@ -369,24 +446,10 @@ export default function App() {
     setIsTranslatingMap(prev => ({ ...prev, [id]: true }));
 
     try {
-      const triggerFunctionSql = objToTranslate.classified.type === 'TRIGGER' ? 
-                                 objToTranslate.classified.parsed.functionBody : null;
-
-      const translatedSql = await translatePLpgSQLWithAI({
-        apiKey: settings.apiKey,
-        objectType: objToTranslate.classified.type,
-        objectName: objToTranslate.classified.name,
-        originalSql: objToTranslate.classified.raw,
-        triggerFunctionSql,
-        model: settings.model
-      });
+      const finalTsql = await translateAndSelfCorrect(objToTranslate, objects);
 
       setObjects(prev => prev.map(obj => {
         if (obj.classified.id === id) {
-          let finalTsql = translatedSql.trim();
-          if (!finalTsql.toUpperCase().endsWith('GO')) {
-            finalTsql += '\nGO';
-          }
           return {
             ...obj,
             translation: {
@@ -417,29 +480,16 @@ export default function App() {
 
     setIsBulkTranslating(true);
 
+    let currentObjects = [...objects];
+
     for (const obj of pendingObjects) {
       const id = obj.classified.id;
       setIsTranslatingMap(prev => ({ ...prev, [id]: true }));
 
       try {
-        const triggerFunctionSql = obj.classified.type === 'TRIGGER' ? 
-                                   obj.classified.parsed.functionBody : null;
+        const finalTsql = await translateAndSelfCorrect(obj, currentObjects);
 
-        const translatedSql = await translatePLpgSQLWithAI({
-          apiKey: settings.apiKey,
-          objectType: obj.classified.type,
-          objectName: obj.classified.name,
-          originalSql: obj.classified.raw,
-          triggerFunctionSql,
-          model: settings.model
-        });
-
-        let finalTsql = translatedSql.trim();
-        if (!finalTsql.toUpperCase().endsWith('GO')) {
-          finalTsql += '\nGO';
-        }
-
-        setObjects(prev => prev.map(item => {
+        currentObjects = currentObjects.map(item => {
           if (item.classified.id === id) {
             return {
               ...item,
@@ -451,7 +501,9 @@ export default function App() {
             };
           }
           return item;
-        }));
+        });
+
+        setObjects(currentObjects);
       } catch (err) {
         console.error(`AI Bulk Translation failed for object ${obj.classified.name}:`, err);
       } finally {
@@ -547,6 +599,7 @@ export default function App() {
             hasApiKey={!!settings.apiKey}
             onGoToSummary={() => setStep('summary')}
             onBackToUpload={handleReset}
+            sourceDialect={sourceDialect}
           />
         )}
         {step === 'summary' && (
@@ -555,6 +608,7 @@ export default function App() {
             validationReport={validationReport}
             onReset={handleReset}
             onBackToWorkspace={() => setStep('workspace')}
+            sourceDialect={sourceDialect}
           />
         )}
       </div>

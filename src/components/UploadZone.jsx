@@ -5,6 +5,7 @@ export default function UploadZone({ onFilesUploaded }) {
   const [dragActive, setDragActive] = useState(false);
   const [sqlFile, setSqlFile] = useState(null);
   const [metaFile, setMetaFile] = useState(null);
+  const [sourceDialect, setSourceDialect] = useState('postgres'); // postgres | oracle
   
   const sqlInputRef = useRef(null);
   const metaInputRef = useRef(null);
@@ -138,15 +139,15 @@ export default function UploadZone({ onFilesUploaded }) {
                 } else {
                   parsedMeta = parseCsv(fileContent);
                 }
-                onFilesUploaded(sqlContent, sqlFile.name, parsedMeta);
+                onFilesUploaded(sqlContent, sqlFile.name, parsedMeta, sourceDialect);
               } else {
                 alert('No .json or .csv metadata file found inside the uploaded ZIP folder!');
-                onFilesUploaded(sqlContent, sqlFile.name, null);
+                onFilesUploaded(sqlContent, sqlFile.name, null, sourceDialect);
               }
             } catch (err) {
               console.error('Failed to parse metadata from ZIP file:', err);
               alert('Error reading metadata ZIP: ' + err.message);
-              onFilesUploaded(sqlContent, sqlFile.name, null);
+              onFilesUploaded(sqlContent, sqlFile.name, null, sourceDialect);
             }
           };
           metaReader.readAsArrayBuffer(metaFile);
@@ -164,12 +165,12 @@ export default function UploadZone({ onFilesUploaded }) {
             } catch (err) {
               console.error('Failed to parse metadata file:', err);
             }
-            onFilesUploaded(sqlContent, sqlFile.name, parsedMeta);
+            onFilesUploaded(sqlContent, sqlFile.name, parsedMeta, sourceDialect);
           };
           metaReader.readAsText(metaFile);
         }
       } else {
-        onFilesUploaded(sqlContent, sqlFile.name, null);
+        onFilesUploaded(sqlContent, sqlFile.name, null, sourceDialect);
       }
     };
     sqlReader.readAsText(sqlFile);
@@ -201,10 +202,10 @@ export default function UploadZone({ onFilesUploaded }) {
             AI MIGRATION ENGINE ACTIVE
           </span>
           <h2 className="hero-title">
-            PostgreSQL <span className="title-arrow">➜</span> SQL Server
+            PostgreSQL & Oracle <span className="title-arrow">➜</span> SQL Server
           </h2>
           <p className="hero-desc">
-            Enterprise-grade automated migration. Upload your PostgreSQL scripts, run the analysis
+            Enterprise-grade automated migration. Upload your PostgreSQL or Oracle schema scripts, run the analysis
             engine, and export a deployment-ready SQL Server T-SQL project with structure validation and dependency checks.
           </p>
         </div>
@@ -290,13 +291,44 @@ export default function UploadZone({ onFilesUploaded }) {
         </div>
       </div>
 
+      {/* 🧭 Dialect Selector Cards */}
+      <div className="dialect-selector-section glass-panel">
+        <span className="dialect-section-tag">CHOOSE SOURCE DIALECT</span>
+        <h3 className="dialect-section-title">Select your source database dialect</h3>
+        <div className="dialect-cards-grid">
+          <div 
+            className={`dialect-card ${sourceDialect === 'postgres' ? 'active' : ''}`}
+            onClick={() => setSourceDialect('postgres')}
+          >
+            <div className="dialect-card-icon postgres-icon">🐘</div>
+            <div className="dialect-card-meta">
+              <h4>PostgreSQL</h4>
+              <p>Transpile PostgreSQL PL/pgSQL schemas, custom domains, functions, and enums.</p>
+            </div>
+            {sourceDialect === 'postgres' && <span className="dialect-check-badge">✓</span>}
+          </div>
+
+          <div 
+            className={`dialect-card ${sourceDialect === 'oracle' ? 'active' : ''}`}
+            onClick={() => setSourceDialect('oracle')}
+          >
+            <div className="dialect-card-icon oracle-icon">🔴</div>
+            <div className="dialect-card-meta">
+              <h4>Oracle Database</h4>
+              <p>Transpile Oracle PL/SQL packages, functions, sequences, and synonyms.</p>
+            </div>
+            {sourceDialect === 'oracle' && <span className="dialect-check-badge">✓</span>}
+          </div>
+        </div>
+      </div>
+
       {/* 📋 Preparation Instructions Header Section */}
       <div className="prep-banner-card glass-panel">
         <div className="prep-banner-info">
           <span className="prep-banner-tag">BEFORE YOU UPLOAD</span>
-          <h2 className="prep-banner-title">Prepare a complete PostgreSQL migration package</h2>
+          <h2 className="prep-banner-title">Prepare a complete {sourceDialect === 'postgres' ? 'PostgreSQL' : 'Oracle'} migration package</h2>
           <p className="prep-banner-desc">
-            A PostgreSQL schema DDL script (.sql) is the core input file. While the converter works end-to-end with a single script, uploading a JSON/CSV file containing table metadata enables advanced column expansion. Clean all credentials and passwords before uploading.
+            A {sourceDialect === 'postgres' ? 'PostgreSQL' : 'Oracle'} schema DDL script (.sql) is the core input file. While the converter works end-to-end with a single script, uploading a JSON/CSV file containing table metadata enables advanced column expansion. Clean all credentials and passwords before uploading.
           </p>
         </div>
         <button className="btn btn-primary prep-continue-btn" onClick={scrollToDropzone}>
@@ -321,15 +353,15 @@ export default function UploadZone({ onFilesUploaded }) {
               <span className="mode-name">Mode A — DDL Script only</span>
               <span className="mode-badge recommended">Recommended</span>
             </div>
-            <p className="mode-desc">Upload the primary DDL script file containing table, view, constraint, and index definitions generated with pg_dump.</p>
+            <p className="mode-desc">Upload the primary DDL script file containing table, view, constraint, and index definitions generated with {sourceDialect === 'postgres' ? 'pg_dump' : 'expdp or DBMS_METADATA'}.</p>
           </div>
 
           <div className="mode-item">
             <div className="mode-header">
-              <span className="mode-name">Mode B — DDL + Custom Types</span>
+              <span className="mode-name">Mode B — DDL + Custom Mappings</span>
               <span className="mode-badge supported">Supported</span>
             </div>
-            <p className="mode-desc">Upload custom enum types, user domains, and composite types to map data constraints accurately.</p>
+            <p className="mode-desc">{sourceDialect === 'postgres' ? 'Upload custom enum types, user domains, and composite types to map data constraints accurately.' : 'Upload sequence offsets and package scopes to map procedural constraints accurately.'}</p>
           </div>
 
           <div className="mode-item">
@@ -359,7 +391,7 @@ export default function UploadZone({ onFilesUploaded }) {
           <div className="security-alert-box">
             <span className="alert-icon">⚠️</span>
             <p className="alert-text">
-              Trigger functions and complex PL/pgSQL code blocks are isolated for AI translation, but they are processed client-side. No sensitive schema data is persisted on any server.
+              Trigger functions and complex {sourceDialect === 'postgres' ? 'PL/pgSQL' : 'PL/SQL'} code blocks are isolated for AI translation, but they are processed client-side. No sensitive schema data is persisted on any server.
             </p>
           </div>
         </div>
@@ -400,9 +432,9 @@ export default function UploadZone({ onFilesUploaded }) {
               <path d="M2 12l10 5 10-5" />
             </svg>
           </div>
-          <h4>PostgreSQL DDL schema dump</h4>
+          <h4>{sourceDialect === 'postgres' ? 'PostgreSQL DDL schema dump' : 'Oracle DDL schema dump'}</h4>
           <p className="add-card-code">
-            <code>table_definitions.sql</code> generated with <code>pg_dump --schema-only</code> containing constraints, indices, and tables.
+            <code>{sourceDialect === 'postgres' ? 'table_definitions.sql' : 'oracle_schema.sql'}</code> generated with <code>{sourceDialect === 'postgres' ? 'pg_dump --schema-only' : 'expdp CONTENT=METADATA_ONLY'}</code>.
           </p>
           <p className="add-card-desc">
             This is the machine-readable source for tables, constraints, defaults, primary/foreign keys, schema layouts, and database properties.
@@ -417,12 +449,14 @@ export default function UploadZone({ onFilesUploaded }) {
               <polyline points="8 6 2 12 8 18" />
             </svg>
           </div>
-          <h4>Procedural logic</h4>
+          <h4>{sourceDialect === 'postgres' ? 'Procedural logic' : 'Packages & PL/SQL body'}</h4>
           <p className="add-card-code">
-            <code>functions.sql</code> containing trigger definitions and PL/pgSQL procedures.
+            <code>{sourceDialect === 'postgres' ? 'functions.sql' : 'packages.sql'}</code> containing procedural trigger/package definitions.
           </p>
           <p className="add-card-desc">
-            Required to reconstruct trigger sequences, variables, conditional evaluations, loops, composite returns, and calculated fields.
+            {sourceDialect === 'postgres'
+              ? 'Required to reconstruct trigger sequences, variables, conditional evaluations, loops, composite returns, and calculated fields.'
+              : 'Required to reconstruct package structures, triggers using :NEW/:OLD variables, loop cursor controls, exception branching, and calculations.'}
           </p>
         </div>
 
@@ -471,7 +505,7 @@ export default function UploadZone({ onFilesUploaded }) {
               <strong>Metadata CSV/JSON:</strong> Crucial for table schema lookup and dynamic wildcards expansion.
             </li>
             <li>
-              <strong>User Mappings:</strong> For mapping legacy Postgres user accounts to SQL Server logins.
+              <strong>User Mappings:</strong> For mapping legacy {sourceDialect === 'postgres' ? 'Postgres' : 'Oracle'} user accounts to SQL Server logins.
             </li>
           </ul>
         </div>
@@ -494,9 +528,9 @@ export default function UploadZone({ onFilesUploaded }) {
               <line x1="12" y1="3" x2="12" y2="15" />
             </svg>
           </div>
-          <h3>Prepare your PostgreSQL migration package</h3>
+          <h3>Prepare your {sourceDialect === 'postgres' ? 'PostgreSQL' : 'Oracle'} migration package</h3>
           <p className="dropzone-sub">
-            Drag & drop your PostgreSQL `.sql` schema dump script, and optional CSV/JSON column metadata definitions.
+            Drag & drop your {sourceDialect === 'postgres' ? 'PostgreSQL' : 'Oracle'} `.sql` schema dump script, and optional CSV/JSON column metadata definitions.
           </p>
         </div>
 
@@ -518,7 +552,7 @@ export default function UploadZone({ onFilesUploaded }) {
             </div>
             <div className="slot-info">
               <h4>Schema Script (.sql)</h4>
-              <p>{sqlFile ? sqlFile.name : 'Choose primary PostgreSQL file'}</p>
+              <p>{sqlFile ? sqlFile.name : `Choose primary ${sourceDialect === 'postgres' ? 'PostgreSQL' : 'Oracle'} file`}</p>
             </div>
             {sqlFile && (
               <button className="btn-remove" onClick={removeSqlFile} aria-label="Remove SQL file" title="Remove SQL file">
@@ -1288,6 +1322,104 @@ export default function UploadZone({ onFilesUploaded }) {
           position: absolute;
           left: 0;
           color: var(--text-muted);
+        }
+
+        /* 🧭 Dialect Selector Card Styles */
+        .dialect-selector-section {
+          padding: 2rem;
+          background: var(--panel-bg);
+          border-radius: var(--radius-lg);
+          border: 1px solid var(--panel-border);
+          box-shadow: var(--shadow-md);
+          display: flex;
+          flex-direction: column;
+          gap: 1.25rem;
+          text-align: left;
+        }
+        .dialect-section-tag {
+          font-size: 0.72rem;
+          font-weight: 800;
+          color: var(--primary);
+          letter-spacing: 0.05em;
+        }
+        .dialect-section-title {
+          font-size: 1.35rem;
+          font-weight: 800;
+          color: var(--text-primary);
+        }
+        .dialect-cards-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 1.5rem;
+          width: 100%;
+        }
+        @media (max-width: 640px) {
+          .dialect-cards-grid {
+            grid-template-columns: 1fr;
+          }
+        }
+        .dialect-card {
+          padding: 1.5rem;
+          background: var(--panel-tab-bg);
+          border: 2px solid var(--panel-border);
+          border-radius: var(--radius-md);
+          display: flex;
+          align-items: center;
+          gap: 1.25rem;
+          cursor: pointer;
+          position: relative;
+          transition: all var(--transition-fast);
+        }
+        .dialect-card:hover {
+          border-color: var(--panel-border-hover);
+          transform: translateY(-1px);
+        }
+        .dialect-card.active {
+          background: var(--panel-bg);
+          border-color: var(--primary);
+          box-shadow: 0 4px 14px var(--primary-glow);
+        }
+        .dialect-card-icon {
+          font-size: 1.85rem;
+          width: 48px;
+          height: 48px;
+          background: var(--panel-bg);
+          border-radius: var(--radius-sm);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow: var(--shadow-sm);
+        }
+        .dialect-card-meta {
+          display: flex;
+          flex-direction: column;
+          gap: 0.3rem;
+          text-align: left;
+        }
+        .dialect-card-meta h4 {
+          font-size: 1.05rem;
+          font-weight: 800;
+          color: var(--text-primary);
+        }
+        .dialect-card-meta p {
+          font-size: 0.8rem;
+          color: var(--text-secondary);
+          line-height: 1.4;
+        }
+        .dialect-check-badge {
+          position: absolute;
+          top: 12px;
+          right: 12px;
+          width: 20px;
+          height: 20px;
+          background: var(--primary);
+          color: #ffffff;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 0.72rem;
+          font-weight: bold;
         }
       `}</style>
     </div>

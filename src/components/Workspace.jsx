@@ -8,7 +8,8 @@ export default function Workspace({
   isTranslatingMap, 
   hasApiKey, 
   onGoToSummary,
-  onBackToUpload
+  onBackToUpload,
+  sourceDialect = 'postgres'
 }) {
   const [selectedObjectId, setSelectedObjectId] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -156,7 +157,7 @@ export default function Workspace({
                 <path d="M12 6v6l4 2" />
               </svg>
               <h3>Workspace Loaded</h3>
-              <p>Select any PostgreSQL database object from the sidebar list to inspect and edit its SQL Server translation side-by-side.</p>
+              <p>Select any {sourceDialect === 'postgres' ? 'PostgreSQL' : 'Oracle'} database object from the sidebar list to inspect and edit its SQL Server translation side-by-side.</p>
               
               <div className="dashboard-stats-grid">
                 <div className="stat-box glass-panel">
@@ -168,7 +169,7 @@ export default function Workspace({
                   <strong>{objects.filter(o => o.classified.type === 'SEQUENCE').length}</strong>
                 </div>
                 <div className="stat-box glass-panel">
-                  <span>PL/pgSQL Code</span>
+                  <span>{sourceDialect === 'postgres' ? 'PL/pgSQL' : 'PL/SQL'} Code</span>
                   <strong>{objects.filter(o => ['VIEW', 'FUNCTION', 'PROCEDURE', 'TRIGGER'].includes(o.classified.type)).length}</strong>
                 </div>
               </div>

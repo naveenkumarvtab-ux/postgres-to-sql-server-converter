@@ -169,7 +169,7 @@ export default function AuthModal({ onAuthSuccess, onBypass }) {
             <span className="auth-main-title-glow">Migration Hub</span>
           </h1>
           <p className="auth-main-desc">
-            Secure access to the PostgreSQL to SQL Server automated conversion engine. Authenticate to continue to your workspace.
+            Secure access to the automated database schema to SQL Server conversion engine. Authenticate to continue to your workspace.
           </p>
         </div>
         <div className="auth-left-footer">
