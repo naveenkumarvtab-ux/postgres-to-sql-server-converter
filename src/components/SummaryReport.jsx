@@ -109,7 +109,7 @@ export default function SummaryReport({ objects, validationReport, onReset, onBa
     categoryOrder.forEach(type => {
       const list = grouped[type];
       if (list && list.length > 0) {
-        const sortedList = sortTopologically(list, objects);
+        const sortedList = type === 'DATA' ? list : sortTopologically(list, objects);
         orderedScripts.push(`\n-- =========================================================\n-- TYPE: ${type}\n-- =========================================================\n`);
         sortedList.forEach(obj => {
           orderedScripts.push(`-- Object: [${obj.classified.type}] ${obj.classified.schema}.${obj.classified.name}`);

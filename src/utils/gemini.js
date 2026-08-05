@@ -26,6 +26,11 @@ export async function translatePLpgSQLWithAI({
 \`\`\`sql
 ${originalSql}
 \`\`\``;
+  } else if (sourceDialect === 'mysql') {
+    sqlSection = `Original MySQL Code:
+\`\`\`sql
+${originalSql}
+\`\`\``;
   } else {
     sqlSection = `Original PostgreSQL Code:
 \`\`\`sql
@@ -93,6 +98,47 @@ Ensure that:
 20. Anonymous PL/SQL Blocks: If translating a standalone anonymous PL/SQL block (starts with DECLARE or BEGIN, not part of a function/procedure), convert it to a plain T-SQL batch (using BEGIN...END). You MUST convert DBMS_OUTPUT.PUT_LINE('text') to PRINT 'text' or PRINT @variable.
 21. Empty String vs NULL Handling: Oracle treats empty strings ('') as NULL. In SQL Server, they are distinct. When translating Oracle DDL or queries containing IS NULL checks on character/string columns (e.g. notes IS NULL), auto-fix this by converting it to check both NULL and empty string: (notes IS NULL OR notes = ''). Apply this auto-fix directly rather than only flagging it.
 22. Return ONLY the valid T-SQL script. DO NOT wrap the code in markdown code blocks (such as \`\`\`sql ... \`\`\`). Do not include any introductory or concluding text. Your entire response must be direct, executable T-SQL code.`;
+  } else if (sourceDialect === 'mysql') {
+    prompt = `You are an expert database administrator. Translate the following MySQL database object (written in MySQL DDL, stored procedure, function, or trigger logic) into its exact Microsoft SQL Server (T-SQL) equivalent.
+
+Original MySQL ${objectType} name: "${objectName}"
+
+${sqlSection}
+
+Ensure that:
+1. No Schema Creation: Do not include CREATE SCHEMA statements in your output — assume the target schema already exists. Only output the object definition itself.
+2. Idempotent Objects (CREATE OR ALTER): For Views, Functions, Procedures, and Triggers, use CREATE OR ALTER instead of CREATE or CREATE OR REPLACE (e.g. CREATE OR ALTER VIEW, CREATE OR ALTER FUNCTION, CREATE OR ALTER PROCEDURE, CREATE OR ALTER TRIGGER).
+3. Error Raising & Exceptions: Convert MySQL's SIGNAL SQLSTATE 'code' SET MESSAGE_TEXT = msg to T-SQL THROW.
+   Note: SQL Server's THROW statement does NOT support expressions (like string concatenation) directly as parameters.
+   To include dynamic values or concatenated variables in the message (e.g., using MySQL's CONCAT or '||' string concatenation), you MUST build the message into a local variable using string concatenation (+ and CAST as needed) on the line(s) before THROW, then pass that variable as THROW's second argument.
+   * WRONG (will cause syntax error):
+     -- THROW 50001, N'Employee not found: ' + CAST(@p_employee_id AS NVARCHAR(20)), 1; -- (Incorrect: THROW does not support concatenation directly)
+   * RIGHT (always use this pattern for dynamic messages):
+     DECLARE @ErrorMessage NVARCHAR(2048) = N'Employee not found: ' + CAST(@p_employee_id AS NVARCHAR(20));
+     THROW 50001, @ErrorMessage, 1;
+   Since SQL Server functions cannot use THROW/RAISERROR, if a function raises custom exceptions, rewrite it as a stored procedure and add a warning comment block.
+4. IFNULL and COALESCE: Map IFNULL(a, b) to ISNULL(a, b) or COALESCE(a, b).
+5. NOW and CURDATE: Map NOW() to GETDATE(). Map CURDATE() to CAST(GETDATE() AS DATE).
+6. DATE_ADD Conversion: Map DATE_ADD(date, INTERVAL n unit) to DATEADD(unit, n, date). Translate units (DAY -> DAY, MONTH -> MONTH, YEAR -> YEAR, HOUR -> HOUR, MINUTE -> MINUTE, SECOND -> SECOND).
+7. DATEDIFF Conversion: MySQL DATEDIFF(date1, date2) computes (date1 - date2) in whole days. SQL Server DATEDIFF(unit, date2, date1) requires a unit and flips the argument order! Map MySQL DATEDIFF(date1, date2) to T-SQL DATEDIFF(DAY, date2, date1). You must flip the dates and insert DAY.
+8. STR_TO_DATE & DATE_FORMAT: Map STR_TO_DATE(text, format) to TRY_CONVERT/PARSE. Map DATE_FORMAT(date, format) to FORMAT(date, 'dotnet-format') or CONVERT. Translate MySQL format tokens (%Y -> yyyy, %m -> MM, %d -> dd, %H -> HH, %i -> mm, %s -> ss) to appropriate SQL Server styles or format string.
+9. String Concatenation: Map CONCAT(a, b, ...) and CONCAT_WS(sep, a, b, ...) to their native T-SQL 2017+ equivalents directly (which have the same name and signatures).
+10. GROUP_CONCAT Conversion: Map GROUP_CONCAT(col SEPARATOR 'delim') to STRING_AGG(col, 'delim'). If the GROUP_CONCAT uses ORDER BY, map to STRING_AGG(col, 'delim') WITHIN GROUP (ORDER BY ...).
+11. LIMIT/OFFSET paging: Map LIMIT n [OFFSET m] to TOP (n) for simple limits, or OFFSET m ROWS FETCH NEXT n ROWS ONLY for paging.
+12. Identifier Quotes: Map MySQL backtick-quoted identifiers (\`table_name\`) to bracket-quoted identifiers ([table_name]) consistently.
+13. INSERT ... ON DUPLICATE KEY UPDATE: Translate to a T-SQL MERGE statement:
+    MERGE INTO [target] USING [source] ON ... WHEN MATCHED THEN UPDATE SET ... WHEN NOT MATCHED THEN INSERT ...
+14. REPLACE INTO: Maps to T-SQL MERGE, but flag the subtle difference: REPLACE INTO deletes and re-inserts the entire row (resetting unspecified columns to defaults), whereas ON DUPLICATE KEY UPDATE only updates the specified columns.
+15. OUT/INOUT Parameters: Map MySQL routine parameters defined as OUT/INOUT to T-SQL OUTPUT parameters.
+16. BEFORE/AFTER Triggers: SQL Server does not support BEFORE triggers. If the trigger is BEFORE, add a warning comment and change it to AFTER or INSTEAD OF. Map OLD/NEW trigger bind variables to deleted/inserted virtual tables. Ensure trigger logic is set-based.
+17. Batch Ending: End every CREATE VIEW / CREATE FUNCTION / CREATE PROCEDURE / CREATE TRIGGER object with GO on its own line immediately after the closing END or semicolon.
+18. CTE (Common Table Expression) Conversion:
+    * Remove the MySQL RECURSIVE keyword from WITH RECURSIVE (e.g. WITH RECURSIVE tree AS ... becomes WITH tree AS ...).
+    * For recursive CTEs, preserve the anchor query, recursive query, UNION ALL, and joins.
+    * Append OPTION (MAXRECURSION 100) at the end of the query using the recursive CTE.
+    * Support all CTE styles (Simple, Multiple, Recursive, Window function, Aggregate, or DML CTE usage like INSERT/UPDATE/DELETE using CTE).
+    * Schema qualify all physical tables (excluding temp tables and CTE names) with [dbo] or mapped schema prefix (e.g. FROM customers becomes FROM [dbo].[customers], UPDATE customers becomes UPDATE [dbo].[customers]).
+19. Return ONLY the valid T-SQL script. DO NOT wrap the code in markdown code blocks (such as \`\`\`sql ... \`\`\`). Do not include any introductory or concluding text. Your entire response must be direct, executable T-SQL code.`;
   } else {
     prompt = `You are an expert database administrator. Translate the following PostgreSQL database object (written in PL/pgSQL or SQL) into its exact Microsoft SQL Server (T-SQL) equivalent.
 

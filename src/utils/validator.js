@@ -62,6 +62,29 @@ export function validateMigration(translatedObjects) {
       hasCriticalError = true;
     }
 
+    // Leaked MySQL syntax checks
+    if (cleanTsql.includes('`')) {
+      report.errors.push({
+        objectName: objLabel,
+        description: `Leaked MySQL-style backtick identifier quotes detected. Use square brackets instead.`
+      });
+      hasCriticalError = true;
+    }
+    if (/\bLIMIT\b/i.test(cleanTsql) && obj.type !== 'DATA') {
+      report.errors.push({
+        objectName: objLabel,
+        description: `Leaked MySQL 'LIMIT' clause. Use TOP or OFFSET...FETCH instead.`
+      });
+      hasCriticalError = true;
+    }
+    if (/\bIFNULL\s*\(/i.test(cleanTsql)) {
+      report.errors.push({
+        objectName: objLabel,
+        description: `Leaked MySQL 'IFNULL()' function. Use ISNULL() or COALESCE() instead.`
+      });
+      hasCriticalError = true;
+    }
+
     if (/\bBOOLEAN\b/i.test(cleanTsql)) {
       report.warnings.push({
         objectName: objLabel,

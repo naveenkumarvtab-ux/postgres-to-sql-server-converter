@@ -5,7 +5,13 @@ export default function UploadZone({ onFilesUploaded }) {
   const [dragActive, setDragActive] = useState(false);
   const [sqlFile, setSqlFile] = useState(null);
   const [metaFile, setMetaFile] = useState(null);
-  const [sourceDialect, setSourceDialect] = useState('postgres'); // postgres | oracle
+  const [sourceDialect, setSourceDialect] = useState('postgres'); // postgres | oracle | mysql
+  
+  const getDialectName = () => {
+    if (sourceDialect === 'postgres') return 'PostgreSQL';
+    if (sourceDialect === 'oracle') return 'Oracle';
+    return 'MySQL';
+  };
   
   const sqlInputRef = useRef(null);
   const metaInputRef = useRef(null);
@@ -319,6 +325,18 @@ export default function UploadZone({ onFilesUploaded }) {
             </div>
             {sourceDialect === 'oracle' && <span className="dialect-check-badge">✓</span>}
           </div>
+
+          <div 
+            className={`dialect-card ${sourceDialect === 'mysql' ? 'active' : ''}`}
+            onClick={() => setSourceDialect('mysql')}
+          >
+            <div className="dialect-card-icon mysql-icon">🐬</div>
+            <div className="dialect-card-meta">
+              <h4>MySQL</h4>
+              <p>Transpile MySQL schemas, routines, triggers, events, and AUTO_INCREMENT fields.</p>
+            </div>
+            {sourceDialect === 'mysql' && <span className="dialect-check-badge">✓</span>}
+          </div>
         </div>
       </div>
 
@@ -326,9 +344,9 @@ export default function UploadZone({ onFilesUploaded }) {
       <div className="prep-banner-card glass-panel">
         <div className="prep-banner-info">
           <span className="prep-banner-tag">BEFORE YOU UPLOAD</span>
-          <h2 className="prep-banner-title">Prepare a complete {sourceDialect === 'postgres' ? 'PostgreSQL' : 'Oracle'} migration package</h2>
+          <h2 className="prep-banner-title">Prepare a complete {getDialectName()} migration package</h2>
           <p className="prep-banner-desc">
-            A {sourceDialect === 'postgres' ? 'PostgreSQL' : 'Oracle'} schema DDL script (.sql) is the core input file. While the converter works end-to-end with a single script, uploading a JSON/CSV file containing table metadata enables advanced column expansion. Clean all credentials and passwords before uploading.
+            A {getDialectName()} schema DDL script (.sql) is the core input file. While the converter works end-to-end with a single script, uploading a JSON/CSV file containing table metadata enables advanced column expansion. Clean all credentials and passwords before uploading.
           </p>
         </div>
         <button className="btn btn-primary prep-continue-btn" onClick={scrollToDropzone}>
@@ -353,7 +371,7 @@ export default function UploadZone({ onFilesUploaded }) {
               <span className="mode-name">Mode A — DDL Script only</span>
               <span className="mode-badge recommended">Recommended</span>
             </div>
-            <p className="mode-desc">Upload the primary DDL script file containing table, view, constraint, and index definitions generated with {sourceDialect === 'postgres' ? 'pg_dump' : 'expdp or DBMS_METADATA'}.</p>
+            <p className="mode-desc">Upload the primary DDL script file containing table, view, constraint, and index definitions generated with {sourceDialect === 'postgres' ? 'pg_dump' : sourceDialect === 'oracle' ? 'expdp or DBMS_METADATA' : 'mysqldump'}.</p>
           </div>
 
           <div className="mode-item">
@@ -361,7 +379,13 @@ export default function UploadZone({ onFilesUploaded }) {
               <span className="mode-name">Mode B — DDL + Custom Mappings</span>
               <span className="mode-badge supported">Supported</span>
             </div>
-            <p className="mode-desc">{sourceDialect === 'postgres' ? 'Upload custom enum types, user domains, and composite types to map data constraints accurately.' : 'Upload sequence offsets and package scopes to map procedural constraints accurately.'}</p>
+            <p className="mode-desc">
+              {sourceDialect === 'postgres' 
+                ? 'Upload custom enum types, user domains, and composite types to map data constraints accurately.' 
+                : sourceDialect === 'oracle' 
+                ? 'Upload sequence offsets and package scopes to map procedural constraints accurately.' 
+                : 'Upload database routine DDL and schemas to map stored routines accurately.'}
+            </p>
           </div>
 
           <div className="mode-item">
@@ -391,7 +415,7 @@ export default function UploadZone({ onFilesUploaded }) {
           <div className="security-alert-box">
             <span className="alert-icon">⚠️</span>
             <p className="alert-text">
-              Trigger functions and complex {sourceDialect === 'postgres' ? 'PL/pgSQL' : 'PL/SQL'} code blocks are isolated for AI translation, but they are processed client-side. No sensitive schema data is persisted on any server.
+              Trigger functions and complex {sourceDialect === 'postgres' ? 'PL/pgSQL' : sourceDialect === 'oracle' ? 'PL/SQL' : 'procedural'} code blocks are isolated for AI translation, but they are processed client-side. No sensitive schema data is persisted on any server.
             </p>
           </div>
         </div>
@@ -432,9 +456,9 @@ export default function UploadZone({ onFilesUploaded }) {
               <path d="M2 12l10 5 10-5" />
             </svg>
           </div>
-          <h4>{sourceDialect === 'postgres' ? 'PostgreSQL DDL schema dump' : 'Oracle DDL schema dump'}</h4>
+          <h4>{sourceDialect === 'postgres' ? 'PostgreSQL DDL schema dump' : sourceDialect === 'oracle' ? 'Oracle DDL schema dump' : 'MySQL DDL schema dump'}</h4>
           <p className="add-card-code">
-            <code>{sourceDialect === 'postgres' ? 'table_definitions.sql' : 'oracle_schema.sql'}</code> generated with <code>{sourceDialect === 'postgres' ? 'pg_dump --schema-only' : 'expdp CONTENT=METADATA_ONLY'}</code>.
+            <code>{sourceDialect === 'postgres' ? 'table_definitions.sql' : sourceDialect === 'oracle' ? 'oracle_schema.sql' : 'mysql_schema.sql'}</code> generated with <code>{sourceDialect === 'postgres' ? 'pg_dump --schema-only' : sourceDialect === 'oracle' ? 'expdp CONTENT=METADATA_ONLY' : 'mysqldump --no-data'}</code>.
           </p>
           <p className="add-card-desc">
             This is the machine-readable source for tables, constraints, defaults, primary/foreign keys, schema layouts, and database properties.
@@ -449,14 +473,16 @@ export default function UploadZone({ onFilesUploaded }) {
               <polyline points="8 6 2 12 8 18" />
             </svg>
           </div>
-          <h4>{sourceDialect === 'postgres' ? 'Procedural logic' : 'Packages & PL/SQL body'}</h4>
+          <h4>{sourceDialect === 'postgres' ? 'Procedural logic' : sourceDialect === 'oracle' ? 'Packages & PL/SQL body' : 'Routines & Triggers'}</h4>
           <p className="add-card-code">
-            <code>{sourceDialect === 'postgres' ? 'functions.sql' : 'packages.sql'}</code> containing procedural trigger/package definitions.
+            <code>{sourceDialect === 'postgres' ? 'functions.sql' : sourceDialect === 'oracle' ? 'packages.sql' : 'routines.sql'}</code> containing procedural trigger/routine definitions.
           </p>
           <p className="add-card-desc">
             {sourceDialect === 'postgres'
               ? 'Required to reconstruct trigger sequences, variables, conditional evaluations, loops, composite returns, and calculated fields.'
-              : 'Required to reconstruct package structures, triggers using :NEW/:OLD variables, loop cursor controls, exception branching, and calculations.'}
+              : sourceDialect === 'oracle'
+              ? 'Required to reconstruct package structures, triggers using :NEW/:OLD variables, loop cursor controls, exception branching, and calculations.'
+              : 'Required to reconstruct stored procedures, functions, triggers using OLD/NEW references, and custom events.'}
           </p>
         </div>
 
@@ -505,7 +531,7 @@ export default function UploadZone({ onFilesUploaded }) {
               <strong>Metadata CSV/JSON:</strong> Crucial for table schema lookup and dynamic wildcards expansion.
             </li>
             <li>
-              <strong>User Mappings:</strong> For mapping legacy {sourceDialect === 'postgres' ? 'Postgres' : 'Oracle'} user accounts to SQL Server logins.
+              <strong>User Mappings:</strong> For mapping legacy {sourceDialect === 'postgres' ? 'Postgres' : sourceDialect === 'oracle' ? 'Oracle' : 'MySQL'} user accounts to SQL Server logins.
             </li>
           </ul>
         </div>
@@ -528,9 +554,9 @@ export default function UploadZone({ onFilesUploaded }) {
               <line x1="12" y1="3" x2="12" y2="15" />
             </svg>
           </div>
-          <h3>Prepare your {sourceDialect === 'postgres' ? 'PostgreSQL' : 'Oracle'} migration package</h3>
+          <h3>Prepare your {getDialectName()} migration package</h3>
           <p className="dropzone-sub">
-            Drag & drop your {sourceDialect === 'postgres' ? 'PostgreSQL' : 'Oracle'} `.sql` schema dump script, and optional CSV/JSON column metadata definitions.
+            Drag & drop your {getDialectName()} `.sql` schema dump script, and optional CSV/JSON column metadata definitions.
           </p>
         </div>
 
@@ -552,7 +578,7 @@ export default function UploadZone({ onFilesUploaded }) {
             </div>
             <div className="slot-info">
               <h4>Schema Script (.sql)</h4>
-              <p>{sqlFile ? sqlFile.name : `Choose primary ${sourceDialect === 'postgres' ? 'PostgreSQL' : 'Oracle'} file`}</p>
+              <p>{sqlFile ? sqlFile.name : `Choose primary ${getDialectName()} file`}</p>
             </div>
             {sqlFile && (
               <button className="btn-remove" onClick={removeSqlFile} aria-label="Remove SQL file" title="Remove SQL file">

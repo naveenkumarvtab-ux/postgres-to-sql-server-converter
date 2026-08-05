@@ -39,6 +39,180 @@ export function mapDataType(pgType, useUnicode = true, dialect = 'postgres') {
     warning: null
   };
 
+  if (dialect === 'mysql') {
+    let typeToCheck = cleanType;
+    let zerofillWarning = null;
+    if (typeToCheck.includes('zerofill')) {
+      typeToCheck = typeToCheck.replace(/zerofill/i, '').trim();
+      zerofillWarning = `MySQL ZEROFILL display attribute has no direct SQL Server equivalent. Handle zero-padding formatting in the application/presentation layer.`;
+    }
+
+    const appendZerofillWarning = (res) => {
+      if (zerofillWarning) {
+        res.warning = res.warning ? `${zerofillWarning} ${res.warning}` : zerofillWarning;
+      }
+    };
+
+    // 1. VARCHAR / CHAR
+    let match = typeToCheck.match(/^(?:varchar|char)\s*\(\s*(\d+|max)\s*\)/i);
+    if (match) {
+      const len = match[1];
+      const isChar = typeToCheck.startsWith('char');
+      if (isChar) {
+        result.mappedType = useUnicode ? `NCHAR(${len})` : `CHAR(${len})`;
+      } else {
+        result.mappedType = useUnicode ? `NVARCHAR(${len})` : `VARCHAR(${len})`;
+      }
+      appendZerofillWarning(result);
+      return result;
+    }
+
+    // 2. TINYINT(1), TINYINT, BOOL, BOOLEAN
+    if (typeToCheck === 'tinyint(1)' || typeToCheck === 'bool' || typeToCheck === 'boolean') {
+      result.mappedType = 'BIT';
+      result.warning = `MySQL 'TINYINT(1)/BOOLEAN' mapped to 'BIT'. Verify if boolean semantics are correct.`;
+      appendZerofillWarning(result);
+      return result;
+    }
+    if (typeToCheck.startsWith('tinyint')) {
+      result.mappedType = 'SMALLINT';
+      result.warning = `MySQL signed 'TINYINT' mapped to 'SMALLINT' to avoid unsigned/signed range overflow (MySQL signed tinyint supports -128 to 127; SQL Server tinyint supports 0 to 255).`;
+      appendZerofillWarning(result);
+      return result;
+    }
+
+    // 3. MEDIUMINT
+    if (typeToCheck.startsWith('mediumint')) {
+      result.mappedType = 'INT';
+      result.warning = `MySQL 3-byte 'MEDIUMINT' mapped to 'INT'.`;
+      appendZerofillWarning(result);
+      return result;
+    }
+
+    // 4. INT / INTEGER
+    if (typeToCheck.startsWith('int') || typeToCheck.startsWith('integer')) {
+      const isUnsigned = typeToCheck.includes('unsigned');
+      if (isUnsigned) {
+        result.mappedType = 'BIGINT';
+        result.warning = `MySQL 'INT UNSIGNED' widened to 'BIGINT' to accommodate the full range (0 to 4.29 billion) without overflow.`;
+      } else {
+        result.mappedType = 'INT';
+      }
+      appendZerofillWarning(result);
+      return result;
+    }
+
+    // 5. SMALLINT
+    if (typeToCheck.startsWith('smallint')) {
+      const isUnsigned = typeToCheck.includes('unsigned');
+      if (isUnsigned) {
+        result.mappedType = 'INT';
+        result.warning = `MySQL 'SMALLINT UNSIGNED' widened to 'INT' to accommodate the full range (0 to 65,535) without overflow.`;
+      } else {
+        result.mappedType = 'SMALLINT';
+      }
+      appendZerofillWarning(result);
+      return result;
+    }
+
+    // 6. BIGINT
+    if (typeToCheck.startsWith('bigint')) {
+      const isUnsigned = typeToCheck.includes('unsigned');
+      if (isUnsigned) {
+        result.mappedType = 'DECIMAL(20,0)';
+        result.warning = `MySQL 'BIGINT UNSIGNED' widened to 'DECIMAL(20,0)' to accommodate the full range (0 to 1.84e19) without overflow.`;
+      } else {
+        result.mappedType = 'BIGINT';
+      }
+      appendZerofillWarning(result);
+      return result;
+    }
+
+    // 7. FLOAT / DOUBLE / DECIMAL
+    if (typeToCheck.startsWith('float')) {
+      result.mappedType = 'REAL';
+      appendZerofillWarning(result);
+      return result;
+    }
+    if (typeToCheck.startsWith('double')) {
+      result.mappedType = 'FLOAT(53)';
+      appendZerofillWarning(result);
+      return result;
+    }
+    match = typeToCheck.match(/^(?:numeric|decimal)\s*\(\s*(\d+)\s*(?:,\s*(\d+))?\s*\)/i);
+    if (match) {
+      const p = match[1];
+      const s = match[2] || '0';
+      result.mappedType = `DECIMAL(${p},${s})`;
+      appendZerofillWarning(result);
+      return result;
+    }
+
+    // 8. TEXT / TINYTEXT / MEDIUMTEXT / LONGTEXT
+    if (typeToCheck.includes('text')) {
+      result.mappedType = 'NVARCHAR(MAX)';
+      appendZerofillWarning(result);
+      return result;
+    }
+
+    // 9. BLOB / TINYBLOB / MEDIUMBLOB / LONGBLOB
+    if (typeToCheck.includes('blob')) {
+      result.mappedType = 'VARBINARY(MAX)';
+      appendZerofillWarning(result);
+      return result;
+    }
+
+    // 10. DATE / DATETIME / TIMESTAMP
+    if (typeToCheck === 'date') {
+      result.mappedType = 'DATE';
+      appendZerofillWarning(result);
+      return result;
+    }
+    if (typeToCheck === 'datetime') {
+      result.mappedType = 'DATETIME2';
+      appendZerofillWarning(result);
+      return result;
+    }
+    if (typeToCheck === 'timestamp') {
+      result.mappedType = 'DATETIME2';
+      result.warning = `MySQL 'TIMESTAMP' auto-updates on row change if ON UPDATE CURRENT_TIMESTAMP is set. A trigger will be generated to simulate this. MySQL TIMESTAMP range is limited to 2038; mapped to DATETIME2 which does not share this limit.`;
+      appendZerofillWarning(result);
+      return result;
+    }
+
+    // 11. YEAR
+    if (typeToCheck === 'year') {
+      result.mappedType = 'SMALLINT';
+      result.warning = `MySQL 'YEAR' has no native equivalent in SQL Server; mapped to 'SMALLINT'.`;
+      appendZerofillWarning(result);
+      return result;
+    }
+
+    // 12. JSON
+    if (typeToCheck === 'json') {
+      result.mappedType = 'NVARCHAR(MAX)';
+      result.warning = `MySQL 'JSON' mapped to NVARCHAR(MAX). Ensure JSON validation check constraint ISJSON() is used if needed.`;
+      appendZerofillWarning(result);
+      return result;
+    }
+
+    // 13. SET
+    if (typeToCheck.startsWith('set(')) {
+      result.mappedType = 'NVARCHAR(MAX)';
+      result.warning = `⚠️ NOT CONVERTED: MySQL 'SET' type has no direct SQL Server equivalent. Recommended: normalize into a child table or a comma-delimited NVARCHAR with documented parsing logic.`;
+      appendZerofillWarning(result);
+      return result;
+    }
+
+    // 14. Spatial types
+    if (typeToCheck === 'geometry' || typeToCheck === 'point' || typeToCheck === 'linestring' || typeToCheck === 'polygon') {
+      result.mappedType = 'GEOMETRY';
+      result.warning = `⚠️ NOT CONVERTED: Spatial type '${pgType}' mapped as GEOMETRY placeholder. Syntax and spatial functions differ significantly in SQL Server.`;
+      appendZerofillWarning(result);
+      return result;
+    }
+  }
+
   if (dialect === 'oracle') {
     // 1. VARCHAR2 / NVARCHAR2 / VARCHAR
     let match = cleanType.match(/^(?:varchar2|nvarchar2|varchar)\s*\(\s*(\d+|max)\s*\)/i);
@@ -384,15 +558,87 @@ export function translateTsqlCheckExpression(expr, warnings = []) {
   return cleanExpr;
 }
 
+export function wrapBooleanExpressionInCase(expr) {
+  let clean = expr.trim();
+  
+  while (clean.startsWith('(') && clean.endsWith(')')) {
+    let level = 0;
+    let matching = true;
+    for (let i = 0; i < clean.length - 1; i++) {
+      if (clean[i] === '(') level++;
+      if (clean[i] === ')') {
+        level--;
+        if (level === 0) {
+          matching = false;
+          break;
+        }
+      }
+    }
+    if (matching && level === 1 && clean[clean.length - 1] === ')') {
+      clean = clean.substring(1, clean.length - 1).trim();
+    } else {
+      break;
+    }
+  }
+
+  if (clean.toUpperCase().startsWith('CASE ')) {
+    return expr;
+  }
+
+  let inQuote = false;
+  let quoteChar = '';
+  let parenLevel = 0;
+  let isBoolean = false;
+
+  for (let i = 0; i < clean.length; i++) {
+    const char = clean[i];
+    
+    if ((char === "'" || char === '"' || char === '`') && clean[i - 1] !== '\\') {
+      if (!inQuote) {
+        inQuote = true;
+        quoteChar = char;
+      } else if (char === quoteChar) {
+        inQuote = false;
+      }
+    } else if (!inQuote) {
+      if (char === '(') parenLevel++;
+      if (char === ')') parenLevel--;
+      
+      if (parenLevel === 0) {
+        const remaining = clean.substring(i);
+        if (remaining.startsWith('<=') || remaining.startsWith('>=') || remaining.startsWith('<>') || remaining.startsWith('!=')) {
+          isBoolean = true;
+          break;
+        }
+        if (char === '=' || char === '<' || char === '>') {
+          isBoolean = true;
+          break;
+        }
+        if (/^\bAND\b/i.test(remaining) || /^\bOR\b/i.test(remaining) || /^\bNOT\b/i.test(remaining)) {
+          isBoolean = true;
+          break;
+        }
+      }
+    }
+  }
+
+  if (isBoolean) {
+    return `CASE WHEN ${clean} THEN 1 ELSE 0 END`;
+  }
+  return expr;
+}
+
 export function translateColumn(colObj, useUnicode = true, enums = null, domains = null, composites = null, dialect = 'postgres') {
   const nameEsc = `[${colObj.name}]`;
   
   if (colObj.isComputed) {
-    // Replace PostgreSQL identifier quotes with SQL Server square brackets inside the expression
-    const cleanExpr = colObj.computedExpression.replace(/"([^"]+)"/g, '[$1]');
+    // Replace PostgreSQL/MySQL identifier quotes/backticks with SQL Server square brackets inside the expression
+    let cleanExpr = colObj.computedExpression.replace(/["`]([^"`]+)["`]/g, '[$1]');
+    cleanExpr = wrapBooleanExpressionInCase(cleanExpr);
+    const persistedStr = (dialect === 'mysql' && !colObj.raw.toUpperCase().includes('STORED')) ? '' : ' PERSISTED';
     return {
-      tsql: `${nameEsc} AS (${cleanExpr}) PERSISTED`,
-      warning: `Computed column [${colObj.name}] was translated to T-SQL PERSISTED format.`
+      tsql: `${nameEsc} AS (${cleanExpr})${persistedStr}`,
+      warning: `Computed column [${colObj.name}] was translated to T-SQL computed column${persistedStr ? ' (PERSISTED)' : ''}.`
     };
   }
 
@@ -463,6 +709,33 @@ export function translateColumn(colObj, useUnicode = true, enums = null, domains
     const typeMap = mapDataType(colObj.type, useUnicode, dialect);
     typeEsc = typeMap.mappedType;
     warning = typeMap.warning;
+  }
+  
+  if (colObj.isAutoIncrement && !typeEsc.toUpperCase().includes('IDENTITY')) {
+    typeEsc += ' IDENTITY(1,1)';
+  }
+
+  if (dialect === 'mysql') {
+    if (colObj.isUnsigned) {
+      const upperType = typeEsc.toUpperCase();
+      if (upperType === 'TINYINT') {
+        typeEsc = 'SMALLINT';
+        warning = warning ? `${warning} Widened to SMALLINT due to UNSIGNED modifier.` : 'Widened to SMALLINT due to UNSIGNED modifier.';
+      } else if (upperType === 'SMALLINT') {
+        typeEsc = 'INT';
+        warning = warning ? `${warning} Widened to INT due to UNSIGNED modifier.` : 'Widened to INT due to UNSIGNED modifier.';
+      } else if (upperType === 'INT') {
+        typeEsc = 'BIGINT';
+        warning = warning ? `${warning} Widened to BIGINT due to UNSIGNED modifier.` : 'Widened to BIGINT due to UNSIGNED modifier.';
+      } else if (upperType === 'BIGINT') {
+        typeEsc = 'DECIMAL(20,0)';
+        warning = warning ? `${warning} Widened to DECIMAL(20,0) due to UNSIGNED modifier.` : 'Widened to DECIMAL(20,0) due to UNSIGNED modifier.';
+      }
+    }
+    if (colObj.isZerofill) {
+      const zfWarn = 'MySQL ZEROFILL display attribute has no direct SQL Server equivalent. Handle zero-padding formatting in the application/presentation layer.';
+      warning = warning ? `${warning} ${zfWarn}` : zfWarn;
+    }
   }
   
   let nullability = colObj.nullable ? 'NULL' : 'NOT NULL';
@@ -723,6 +996,28 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
       } else {
         result.tsql = `DROP TABLE IF EXISTS [${obj.schema}].[${obj.name}];\nGO\nCREATE TABLE [${obj.schema}].[${obj.name}] (\n${colsTsql.join(',\n')}\n);\nGO`;
       }
+
+      const updateCols = obj.parsed.columns.filter(c => c.onUpdateExpr);
+      if (updateCols.length > 0 && dialect === 'mysql') {
+        const pkCol = obj.parsed.columns.find(c => c.primaryKey) || obj.parsed.columns[0];
+        for (const uc of updateCols) {
+          const trgName = `trg_${obj.name}_update_${uc.name}`;
+          const triggerSql = `\nCREATE OR ALTER TRIGGER [${obj.schema}].[${trgName}]\n` +
+                             `ON [${obj.schema}].[${obj.name}]\n` +
+                             `AFTER UPDATE\n` +
+                             `AS\n` +
+                             `BEGIN\n` +
+                             `    SET NOCOUNT ON;\n` +
+                             `    UPDATE t\n` +
+                             `    SET t.[${uc.name}] = GETDATE()\n` +
+                             `    FROM [${obj.schema}].[${obj.name}] t\n` +
+                             `    INNER JOIN inserted i ON t.[${pkCol.name}] = i.[${pkCol.name}];\n` +
+                             `END\nGO`;
+          result.tsql += `\n${triggerSql}`;
+          result.warnings.push(`Column [${uc.name}] uses ON UPDATE CURRENT_TIMESTAMP. Generated AFTER UPDATE trigger [${trgName}] to simulate this behavior.`);
+        }
+      }
+
       validateTableTsql(result.tsql, obj.name, result.warnings);
       break;
     }
@@ -917,8 +1212,20 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
     }
 
     case 'DATA': {
-      // Pass data statements directly
-      result.tsql = obj.raw;
+      if (dialect === 'mysql' && (obj.raw.toUpperCase().includes('ON DUPLICATE KEY') || obj.raw.toUpperCase().startsWith('REPLACE INTO') || obj.raw.toUpperCase().startsWith('REPLACE '))) {
+        const localMerge = convertMySqlDmlToMerge(obj.raw, tableColumnsMap);
+        if (localMerge) {
+          result.tsql = localMerge;
+          result.requiresAi = false;
+          result.warnings.push(`Successfully compiled MySQL DML statement to T-SQL MERGE.`);
+        } else {
+          result.requiresAi = true;
+          result.tsql = `-- PENDING AI TRANSLATION (MERGE MAPPING) --\n-- The original MySQL DML statement requires translation to a T-SQL MERGE statement.\n-- Click 'AI Translate' to convert this statement.\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+          result.warnings.push(`MySQL MERGE statement detected (ON DUPLICATE KEY UPDATE or REPLACE INTO). It requires translation by the AI model.`);
+        }
+      } else {
+        result.tsql = obj.raw;
+      }
       break;
     }
 
@@ -947,10 +1254,24 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
       break;
     }
 
+    case 'MYSQL_EVENT': {
+      result.tsql = `-- 📅 MIGRATION NOTE: MySQL Event [${obj.name}] detected.\n` +
+                    `-- Scheduled events are not supported directly inside SQL Server database scripts.\n` +
+                    `-- Recommended: Migrate this logic to a SQL Server Agent Job.\n` +
+                    `-- Original Event DDL:\n` +
+                    `/*\n${obj.raw}\n*/\nGO`;
+      result.warnings.push(`MySQL Event [${obj.schema}].[${obj.name}] has no direct SQL Server equivalent. Consider SQL Server Agent Job.`);
+      break;
+    }
+
     default: {
-      // Keep other unrecognized lines as commented references
-      result.tsql = `/* UNRECOGNIZED STATEMENT:\n${obj.raw}\n*/`;
-      result.warnings.push(`Unrecognized SQL statement (skipped or commented out).`);
+      const cleanRaw = obj.raw.trim().toUpperCase().replace(/;/g, '');
+      if (cleanRaw === 'END') {
+        result.tsql = '';
+      } else {
+        result.tsql = `/* UNRECOGNIZED STATEMENT:\n${obj.raw}\n*/`;
+        result.warnings.push(`Unrecognized SQL statement (skipped or commented out).`);
+      }
     }
   }
 
@@ -1275,6 +1596,33 @@ export function validateTableTsql(tsql, tableName, warnings) {
         if (itemPLevel !== 0) {
           warnings.push(`⚠️ Unbalanced parentheses within column or constraint definition: "${item}" (balance: ${itemPLevel}).`);
         }
+
+        // Validate computed column boolean expressions
+        const asMatch = item.match(/(?:\[([a-zA-Z0-9_\-]+)\]|([a-zA-Z0-9_\-]+))\s+AS\s*\((.*)\)/i);
+        if (asMatch) {
+          const colName = asMatch[1] || asMatch[2];
+          // Extract the expression inside the parenthesis. Since .* is greedy, let's strip trailing PERSISTED.
+          let expr = asMatch[3].trim();
+          if (expr.toUpperCase().endsWith('PERSISTED')) {
+            expr = expr.substring(0, expr.length - 9).trim();
+          }
+          // Strip the trailing paren matched by regex if it matched trailing ones
+          if (expr.endsWith(')')) {
+            // Count parens in expr to see if we have one extra closing paren
+            let pBal = 0;
+            for (let i = 0; i < expr.length; i++) {
+              if (expr[i] === '(') pBal++;
+              if (expr[i] === ')') pBal--;
+            }
+            if (pBal < 0) {
+              expr = expr.substring(0, expr.length - 1).trim();
+            }
+          }
+          const wrapped = wrapBooleanExpressionInCase(expr);
+          if (wrapped !== expr) {
+            warnings.push(`⚠️ Computed column [${colName}] in table [${tableName}] contains an invalid T-SQL boolean comparison expression: "${expr}". Wrap in CASE WHEN to produce a storable value.`);
+          }
+        }
       }
     }
   }
@@ -1401,6 +1749,51 @@ export function translateIntervals(sql) {
 
 export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'public': 'dbo' }, tableColumnsMap = {}, sqlServerVersion = '2017+') {
   let clean = sql;
+
+  // 0. Remove MySQL WITH RECURSIVE and save recursion flag
+  const isRecursive = clean.toUpperCase().includes('WITH RECURSIVE');
+  clean = clean.replace(/\bWITH\s+RECURSIVE\b/gi, 'WITH');
+
+  // Convert MySQL backticks to bracketed identifiers
+  clean = clean.replace(/`([^`]+)`/g, '[$1]');
+  clean = clean.replace(/`/g, ''); // double guard for any stray backticks
+
+  // Schema qualify unqualified table references, ignoring CTE aliases and temp tables (#)
+  const cteNames = getCteNames(clean);
+  const tblRefRegex = /(\bFROM|\bJOIN|\bUPDATE|\bINTO|\bINSERT|\bMERGE\s+INTO)\s+((?!\[?(?:sys|INFORMATION_SCHEMA|inserted|deleted|dual)\]?)\b\[?([a-zA-Z0-9_#]+)\b\]?(?!\s*[\.\[]))/gi;
+  clean = clean.replace(tblRefRegex, (match, keyword, rawRef, tableName) => {
+    const lowerName = tableName.toLowerCase();
+    if (tableName.startsWith('#') || cteNames.includes(lowerName)) {
+      return match;
+    }
+    const targetSchema = schemaMap['public'] || 'dbo';
+    return `${keyword} [${targetSchema}].[${tableName}]`;
+  });
+
+  // Append OPTION (MAXRECURSION 100) to recursive CTEs
+  if (isRecursive && !clean.toUpperCase().includes('MAXRECURSION')) {
+    const upperClean = clean.trim().toUpperCase();
+    if (upperClean.startsWith('WITH') || (/^\/\*[\s\S]*?\*\/\s*WITH/i.test(clean.trim())) || (/^--.*?\n\s*WITH/i.test(clean.trim()))) {
+      if (clean.endsWith(';')) {
+        clean = clean.substring(0, clean.length - 1).trim() + '\nOPTION (MAXRECURSION 100);';
+      } else {
+        clean = clean + '\nOPTION (MAXRECURSION 100)';
+      }
+    } else {
+      cteNames.forEach(cte => {
+        const cteEscaped = cte.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const queryRegex = new RegExp(`(\\b(?:SELECT|INSERT|UPDATE|DELETE)\\b[\\s\\S]*?\\b${cteEscaped}\\b[\\s\\S]*?)(;|$)(?!\\s*END)`, 'i');
+        if (queryRegex.test(clean)) {
+          clean = clean.replace(queryRegex, (match, queryPart, suffix) => {
+            if (queryPart.toUpperCase().includes('MAXRECURSION')) {
+              return match;
+            }
+            return `${queryPart.trim()}\nOPTION (MAXRECURSION 100)${suffix}`;
+          });
+        }
+      });
+    }
+  }
 
   // Oracle Sequence NEXTVAL/CURRVAL translation
   const oracleNextvalRegex = /(\b[a-zA-Z0-9_\.\[\]]+)\.NEXTVAL\b/gi;
@@ -1666,5 +2059,206 @@ export function expandSelectStar(sql, tableColumnsMap = {}) {
     return match;
   });
   return clean;
+}
+
+export function convertMySqlDmlToMerge(rawSql, tableColumnsMap = {}) {
+  // Clean backticks first
+  let cleanSql = rawSql.replace(/`([^`]+)`/g, '$1').trim();
+  
+  // 1. Identify table name
+  const isReplace = cleanSql.toUpperCase().startsWith('REPLACE');
+  
+  const tableMatch = cleanSql.match(/(?:INSERT\s+INTO|REPLACE\s+INTO|REPLACE)\s+([a-zA-Z0-9_\.]+)/i);
+  if (!tableMatch) return null;
+  const rawTableName = tableMatch[1];
+  
+  let schema = 'dbo';
+  let tableName = rawTableName;
+  if (rawTableName.includes('.')) {
+    const parts = rawTableName.split('.');
+    schema = parts[0];
+    tableName = parts[1];
+  }
+  
+  const fullTableKey = `${schema.toLowerCase()}.${tableName.toLowerCase()}`;
+  const allCols = tableColumnsMap[fullTableKey] || [];
+  
+  // 2. Extract column names specified in INSERT/REPLACE statement
+  const valuesIdx = cleanSql.toUpperCase().indexOf('VALUES');
+  if (valuesIdx === -1) return null;
+  
+  const insertPart = cleanSql.substring(0, valuesIdx).trim();
+  const firstParen = insertPart.indexOf('(');
+  const lastParen = insertPart.lastIndexOf(')');
+  
+  let specifiedCols = [];
+  if (firstParen !== -1 && lastParen !== -1 && lastParen > firstParen) {
+    specifiedCols = insertPart.substring(firstParen + 1, lastParen).split(',').map(s => s.trim());
+  } else {
+    specifiedCols = [...allCols];
+  }
+  
+  // 3. Extract values expression
+  const valuesPart = cleanSql.substring(valuesIdx + 6).trim();
+  const valFirstParen = valuesPart.indexOf('(');
+  if (valFirstParen === -1) return null;
+  
+  let valLastParen = -1;
+  let level = 0;
+  for (let idx = valFirstParen; idx < valuesPart.length; idx++) {
+    if (valuesPart[idx] === '(') level++;
+    if (valuesPart[idx] === ')') {
+      level--;
+      if (level === 0) {
+        valLastParen = idx;
+        break;
+      }
+    }
+  }
+  if (valLastParen === -1) return null;
+  
+  const rawValuesStr = valuesPart.substring(valFirstParen + 1, valLastParen);
+  const specifiedVals = splitValues(rawValuesStr);
+  
+  if (specifiedCols.length === 0 || specifiedCols.length !== specifiedVals.length) {
+    return null;
+  }
+  
+  // 4. ON DUPLICATE KEY UPDATE clause parsing
+  let updatePairs = [];
+  if (!isReplace) {
+    const dupIdx = cleanSql.toUpperCase().indexOf('ON DUPLICATE KEY UPDATE');
+    if (dupIdx !== -1) {
+      const updateClause = cleanSql.substring(dupIdx + 23).trim();
+      updatePairs = parseUpdateAssignments(updateClause);
+    }
+  }
+  
+  // 5. Build T-SQL MERGE statement
+  let pkCol = specifiedCols[0];
+  const likelyPk = specifiedCols.find(c => c.toLowerCase() === 'id' || c.toLowerCase().endsWith('_id'));
+  if (likelyPk) pkCol = likelyPk;
+  
+  if (!pkCol) return null;
+  
+  const targetEsc = `[${schema}].[${tableName}]`;
+  const sourceSelects = specifiedCols.map((col, idx) => {
+    return `${specifiedVals[idx]} AS [${col}]`;
+  }).join(', ');
+  
+  let updateSets = [];
+  if (isReplace) {
+    if (allCols.length > 0) {
+      allCols.forEach(col => {
+        if (col.toLowerCase() === pkCol.toLowerCase()) return;
+        
+        if (specifiedCols.some(c => c.toLowerCase() === col.toLowerCase())) {
+          updateSets.push(`[target].[${col}] = [source].[${col}]`);
+        } else {
+          const colLower = col.toLowerCase();
+          if (colLower.endsWith('_at') || colLower.endsWith('_date') || colLower.endsWith('_time') || colLower === 'created' || colLower === 'updated' || colLower === 'default') {
+            updateSets.push(`[target].[${col}] = DEFAULT`);
+          } else {
+            updateSets.push(`[target].[${col}] = NULL`);
+          }
+        }
+      });
+    } else {
+      specifiedCols.forEach(col => {
+        if (col.toLowerCase() === pkCol.toLowerCase()) return;
+        updateSets.push(`[target].[${col}] = [source].[${col}]`);
+      });
+    }
+  } else {
+    updatePairs.forEach(pair => {
+      let tsqlExpr = pair.expr;
+      tsqlExpr = tsqlExpr.replace(/\bVALUES\s*\(\s*([a-zA-Z0-9_]+)\s*\)/gi, '[source].[$1]');
+      allCols.forEach(c => {
+        const colRegex = new RegExp(`\\b${c}\\b(?!\\s*\\.|\\s*\\])`, 'g');
+        tsqlExpr = tsqlExpr.replace(colRegex, `[target].[${c}]`);
+      });
+      updateSets.push(`[target].[${pair.col}] = ${tsqlExpr}`);
+    });
+  }
+  
+  if (updateSets.length === 0) return null;
+  
+  const mergeSql = `MERGE INTO ${targetEsc} AS [target]\n` +
+                   `USING (SELECT ${sourceSelects}) AS [source]\n` +
+                   `ON ([target].[${pkCol}] = [source].[${pkCol}])\n` +
+                   `WHEN MATCHED THEN\n` +
+                   `    UPDATE SET ${updateSets.join(',\n               ')}\n` +
+                   `WHEN NOT MATCHED THEN\n` +
+                   `    INSERT (${specifiedCols.map(c => `[${c}]`).join(', ')}) ` +
+                   `VALUES (${specifiedCols.map(c => `[source].[${c}]`).join(', ')});`;
+  return mergeSql;
+}
+
+function splitValues(valuesStr) {
+  const vals = [];
+  let current = '';
+  let inQuote = false;
+  let quoteChar = '';
+  let parenLevel = 0;
+  
+  for (let i = 0; i < valuesStr.length; i++) {
+    const char = valuesStr[i];
+    if ((char === "'" || char === '"') && valuesStr[i - 1] !== '\\') {
+      if (!inQuote) {
+        inQuote = true;
+        quoteChar = char;
+      } else if (char === quoteChar) {
+        inQuote = false;
+      }
+      current += char;
+    } else if (!inQuote) {
+      if (char === '(') parenLevel++;
+      if (char === ')') parenLevel--;
+      
+      if (char === ',' && parenLevel === 0) {
+        vals.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    } else {
+      current += char;
+    }
+  }
+  if (current.trim().length > 0) {
+    vals.push(current.trim());
+  }
+  return vals;
+}
+
+function parseUpdateAssignments(updateStr) {
+  const pairs = [];
+  const parts = splitValues(updateStr);
+  parts.forEach(part => {
+    const eqIdx = part.indexOf('=');
+    if (eqIdx !== -1) {
+      const col = part.substring(0, eqIdx).trim();
+      const expr = part.substring(eqIdx + 1).trim();
+      pairs.push({ col, expr });
+    }
+  });
+  return pairs;
+}
+
+export function getCteNames(sql) {
+  const cteNames = [];
+  const cleanSql = sql.replace(/`([^`]+)`/g, '$1').trim();
+  
+  const withRegex = /\bWITH\s+([a-zA-Z0-9_]+)\s+AS\s*\(/gi;
+  let match;
+  while ((match = withRegex.exec(cleanSql)) !== null) {
+    cteNames.push(match[1].toLowerCase());
+  }
+  
+  const subCteRegex = /,\s*([a-zA-Z0-9_]+)\s+AS\s*\(/gi;
+  while ((match = subCteRegex.exec(cleanSql)) !== null) {
+    cteNames.push(match[1].toLowerCase());
+  }
+  return cteNames;
 }
 

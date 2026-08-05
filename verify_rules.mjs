@@ -90,6 +90,22 @@ const mockObjects = [
 const report = validateMigration(mockObjects);
 console.log('Validation output:', JSON.stringify(report, null, 2));
 
+console.log('\nTesting Postgres computed column boolean expressions...');
+import { translateColumn } from 'file:///c:/Users/Naveenkumar/Downloads/Postgres to SQL Server Conversion Application/src/utils/translator.js';
+const pgColObj = {
+  name: 'low_stock',
+  isComputed: true,
+  computedExpression: '"stock_qty" < 10',
+  raw: 'low_stock integer GENERATED ALWAYS AS (stock_qty < 10) STORED'
+};
+const pgTrans = translateColumn(pgColObj, true, null, null, null, 'postgres');
+if (pgTrans.tsql.includes('CASE WHEN [stock_qty] < 10 THEN 1 ELSE 0 END')) {
+  console.log('✅ [PASS] Postgres boolean computed column successfully wrapped');
+} else {
+  console.log(`❌ [FAIL] Postgres boolean computed column wrapping failed. Got: ${pgTrans.tsql}`);
+  failed++;
+}
+
 if (failed > 0) {
   process.exit(1);
 } else {

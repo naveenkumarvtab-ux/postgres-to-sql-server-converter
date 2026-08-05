@@ -28,8 +28,15 @@ export function cleanIdentifier(name) {
   if (clean.startsWith('[') && clean.endsWith(']')) {
     clean = clean.substring(1, clean.length - 1);
   }
+  // Strip backticks
+  if (clean.startsWith('`') && clean.endsWith('`')) {
+    clean = clean.substring(1, clean.length - 1);
+  }
+  clean = clean.replace(/`/g, '');
   return clean;
 }
+
+let activeDialect = 'postgres';
 
 // Split schema identifier into [schema, name]
 export function parseSchemaQualifiedName(fullName) {
@@ -41,7 +48,7 @@ export function parseSchemaQualifiedName(fullName) {
     };
   }
   return {
-    schema: 'public',
+    schema: (activeDialect === 'oracle' || activeDialect === 'mysql') ? 'dbo' : 'public',
     name: cleanIdentifier(fullName)
   };
 }
@@ -93,9 +100,132 @@ export function splitOracleStatements(sqlContent) {
   return statements.filter(s => s.trim().length > 0);
 }
 
+function splitMySqlStatements(sqlContent) {
+  const statements = [];
+  let currentStatement = '';
+  let currentDelimiter = ';';
+  let state = 'NORMAL'; // NORMAL, SINGLE_QUOTE, DOUBLE_QUOTE, BACKTICK_QUOTE, SINGLE_COMMENT, MULTI_COMMENT
+  
+  let i = 0;
+  while (i < sqlContent.length) {
+    const char = sqlContent[i];
+    const nextChar = sqlContent[i + 1] || '';
+    
+    // Check if we are at the start of a line or statement and there is a DELIMITER command
+    if (state === 'NORMAL') {
+      const isStartOfLine = i === 0 || sqlContent[i - 1] === '\n' || sqlContent[i - 1] === '\r';
+      if (isStartOfLine) {
+        let spaceLen = 0;
+        while (sqlContent[i + spaceLen] === ' ' || sqlContent[i + spaceLen] === '\t') {
+          spaceLen++;
+        }
+        const sub = sqlContent.substring(i + spaceLen);
+        if (sub.toUpperCase().startsWith('DELIMITER ')) {
+          // Find end of the line
+          const endOfLineIdx = sqlContent.indexOf('\n', i);
+          const delimiterLine = endOfLineIdx !== -1 
+            ? sqlContent.substring(i, endOfLineIdx) 
+            : sqlContent.substring(i);
+            
+          const parts = delimiterLine.trim().split(/\s+/);
+          if (parts.length >= 2) {
+            currentDelimiter = parts[1];
+          }
+          
+          i += delimiterLine.length;
+          continue;
+        }
+      }
+    }
+    
+    if (state === 'NORMAL') {
+      if (char === '-' && nextChar === '-') {
+        state = 'SINGLE_COMMENT';
+        i += 2;
+        continue;
+      } else if (char === '#' && (i === 0 || sqlContent[i - 1] === '\n' || sqlContent[i - 1] === '\r' || sqlContent[i - 1] === ' ' || sqlContent[i - 1] === '\t')) {
+        // MySQL also supports '#' for single line comments
+        state = 'SINGLE_COMMENT';
+        i++;
+        continue;
+      } else if (char === '/' && nextChar === '*') {
+        state = 'MULTI_COMMENT';
+        i += 2;
+        continue;
+      } else if (char === "'") {
+        state = 'SINGLE_QUOTE';
+        currentStatement += char;
+      } else if (char === '"') {
+        state = 'DOUBLE_QUOTE';
+        currentStatement += char;
+      } else if (char === '`') {
+        state = 'BACKTICK_QUOTE';
+        currentStatement += char;
+      } else {
+        // Check if we have matched the current delimiter
+        const sub = sqlContent.substring(i);
+        if (sub.startsWith(currentDelimiter)) {
+          statements.push(currentStatement.trim());
+          currentStatement = '';
+          i += currentDelimiter.length;
+          continue;
+        } else {
+          currentStatement += char;
+        }
+      }
+    } else if (state === 'SINGLE_QUOTE') {
+      currentStatement += char;
+      if (char === '\\') {
+        if (nextChar) {
+          currentStatement += nextChar;
+          i++;
+        }
+      } else if (char === "'") {
+        state = 'NORMAL';
+      }
+    } else if (state === 'DOUBLE_QUOTE') {
+      currentStatement += char;
+      if (char === '\\') {
+        if (nextChar) {
+          currentStatement += nextChar;
+          i++;
+        }
+      } else if (char === '"') {
+        state = 'NORMAL';
+      }
+    } else if (state === 'BACKTICK_QUOTE') {
+      currentStatement += char;
+      if (char === '`') {
+        state = 'NORMAL';
+      }
+    } else if (state === 'SINGLE_COMMENT') {
+      if (char === '\n' || char === '\r') {
+        state = 'NORMAL';
+        currentStatement += '\n'; // Preserve line endings for readability
+      }
+    } else if (state === 'MULTI_COMMENT') {
+      if (char === '*' && nextChar === '/') {
+        state = 'NORMAL';
+        i++;
+        currentStatement += ' ';
+      }
+    }
+    i++;
+  }
+  
+  if (currentStatement.trim()) {
+    statements.push(currentStatement.trim());
+  }
+  
+  return statements.filter(stmt => stmt.trim().length > 0);
+}
+
 export function splitSqlStatements(sqlContent, dialect = 'postgres') {
   if (dialect === 'oracle') {
     return splitOracleStatements(sqlContent);
+  }
+  if (dialect === 'mysql') {
+    return splitMySqlStatements(sqlContent);
   }
 
   const statements = [];
@@ -307,7 +437,15 @@ function stripLeadingComments(sql) {
  * Categorize a single SQL statement and parse its structure.
  */
 export function classifyStatement(rawSql, dialect = 'postgres') {
-  const commentlessSql = stripAllComments(rawSql);
+  activeDialect = dialect;
+  let stmtSql = rawSql;
+  if (dialect === 'mysql') {
+    // Strip DEFINER clause from MySQL statements
+    stmtSql = stmtSql.replace(/DEFINER\s*=\s*(?:`[^`]+`|'[^\']+'|"[^\"]+"|CURRENT_USER)\s*@\s*(?:`[^`]+`|'[^\']+'|"[^\"]+"|[^\s]+)/i, '');
+    stmtSql = stmtSql.replace(/DEFINER\s*=\s*(?:`[^`]+`|'[^\']+'|"[^\"]+"|CURRENT_USER)/i, '');
+  }
+
+  const commentlessSql = stripAllComments(stmtSql);
   const commandSql = stripLeadingComments(commentlessSql);
   const cleanSql = commandSql.replace(/\s+/g, ' ').trim();
   const upperSql = cleanSql.toUpperCase();
@@ -316,7 +454,7 @@ export function classifyStatement(rawSql, dialect = 'postgres') {
     id: Math.random().toString(36).substring(2, 9),
     type: 'OTHER',
     name: 'unknown',
-    schema: 'public',
+    schema: (dialect === 'oracle' || dialect === 'mysql') ? 'dbo' : 'public',
     raw: rawSql,
     clean: cleanSql,
     parsed: {},
@@ -415,6 +553,22 @@ export function classifyStatement(rawSql, dialect = 'postgres') {
     }
   }
 
+  // MySQL-specific object classifications
+  if (dialect === 'mysql') {
+    if (upperSql.startsWith('CREATE EVENT ') || upperSql.includes(' EVENT ')) {
+      obj.type = 'MYSQL_EVENT';
+      const match = cleanSql.match(/EVENT\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s;({]+)/i);
+      if (match) {
+        const qname = parseSchemaQualifiedName(match[1]);
+        obj.name = qname.name;
+        obj.schema = qname.schema;
+      } else {
+        obj.name = 'mysql_event';
+      }
+      return obj;
+    }
+  }
+
   // 1.5 CREATE EXTENSION
   if (upperSql.startsWith('CREATE EXTENSION ')) {
     obj.type = 'EXTENSION';
@@ -426,10 +580,10 @@ export function classifyStatement(rawSql, dialect = 'postgres') {
     return obj;
   }
 
-  // 1. Schema
-  if (upperSql.startsWith('CREATE SCHEMA ')) {
+  // 1. Schema / Database
+  if (upperSql.startsWith('CREATE SCHEMA ') || upperSql.startsWith('CREATE DATABASE ')) {
     obj.type = 'SCHEMA';
-    const match = cleanSql.match(/CREATE\s+SCHEMA\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s;]+)/i);
+    const match = cleanSql.match(/(?:CREATE\s+SCHEMA|CREATE\s+DATABASE)\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s;]+)/i);
     if (match) {
       obj.name = cleanIdentifier(match[1]);
       obj.schema = obj.name;
@@ -752,10 +906,10 @@ export function classifyStatement(rawSql, dialect = 'postgres') {
     return obj;
   }
 
-  // 9. INSERT / COPY (Data)
-  if (upperSql.startsWith('INSERT INTO ') || upperSql.startsWith('COPY ')) {
+  // 9. DML: INSERT / UPDATE / DELETE / REPLACE / COPY (Data)
+  if (upperSql.startsWith('INSERT INTO ') || upperSql.startsWith('COPY ') || upperSql.startsWith('UPDATE ') || upperSql.startsWith('DELETE ') || upperSql.startsWith('REPLACE ')) {
     obj.type = 'DATA';
-    const match = cleanSql.match(/(?:INSERT\s+INTO|COPY)\s+([^\s;(]+)/i);
+    const match = cleanSql.match(/(?:INSERT\s+INTO|COPY|UPDATE|DELETE\s+FROM|DELETE|REPLACE\s+INTO|REPLACE)\s+([^\s;(]+)/i);
     if (match) {
       const qname = parseSchemaQualifiedName(match[1]);
       obj.name = qname.name;
@@ -799,7 +953,12 @@ export function classifyStatement(rawSql, dialect = 'postgres') {
  * E.g., `metadata jsonb`
  */
 function parseColumnDefinition(columnText) {
-  const trimmed = columnText.trim();
+  let cleanedText = columnText.trim();
+  // Strip CHARACTER SET and COLLATE from column text (case insensitive)
+  cleanedText = cleanedText.replace(/CHARACTER\s+SET\s+[^\s,;()]+/i, '');
+  cleanedText = cleanedText.replace(/COLLATE\s+[^\s,;()]+/i, '');
+  
+  const trimmed = cleanedText.trim();
   
   // Extract column name: first word (it might be wrapped in double quotes)
   const firstWordMatch = trimmed.match(/^("[^"]+"|[^\s]+)/);
@@ -929,6 +1088,37 @@ function parseColumnDefinition(columnText) {
   
   // Parse constraints in the remainder: DEFAULT, NOT NULL, NULL, UNIQUE, PRIMARY KEY, REFERENCES
   let upperRem = remainder.toUpperCase();
+
+  // Extract MySQL UNSIGNED modifier
+  const isUnsigned = upperRem.includes('UNSIGNED');
+  if (isUnsigned) {
+    remainder = remainder.replace(/UNSIGNED/i, '').trim();
+    upperRem = remainder.toUpperCase();
+  }
+
+  // Extract MySQL ZEROFILL display attribute
+  const isZerofill = upperRem.includes('ZEROFILL');
+  if (isZerofill) {
+    remainder = remainder.replace(/ZEROFILL/i, '').trim();
+    upperRem = remainder.toUpperCase();
+  }
+
+  // Extract MySQL AUTO_INCREMENT
+  const isAutoIncrement = upperRem.includes('AUTO_INCREMENT');
+  if (isAutoIncrement) {
+    remainder = remainder.replace(/AUTO_INCREMENT/i, '').trim();
+    upperRem = remainder.toUpperCase();
+  }
+
+  // Extract MySQL ON UPDATE current_timestamp
+  let onUpdateExpr = null;
+  const onUpdateMatch = remainder.match(/ON\s+UPDATE\s+([^\s,;()]+(?:\(\s*\d*\s*\))?)/i);
+  if (onUpdateMatch) {
+    onUpdateExpr = onUpdateMatch[1];
+    remainder = remainder.replace(onUpdateMatch[0], '').trim();
+    upperRem = remainder.toUpperCase();
+  }
+  
   const nullable = !upperRem.includes('NOT NULL');
   const primaryKey = upperRem.includes('PRIMARY KEY');
   const unique = upperRem.includes('UNIQUE');
@@ -1016,7 +1206,11 @@ function parseColumnDefinition(columnText) {
     isComputed,
     computedExpression,
     inlineReferences,
-    inlineCheck
+    inlineCheck,
+    isAutoIncrement,
+    onUpdateExpr,
+    isUnsigned,
+    isZerofill
   };
 }
 
