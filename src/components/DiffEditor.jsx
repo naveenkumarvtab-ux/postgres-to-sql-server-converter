@@ -81,7 +81,7 @@ export default function DiffEditor({
               <h4>{objectName}</h4>
             </div>
             <div className="pane-actions">
-              {isComplex && requiresAi !== false && (
+              {isComplex && (
                 <button 
                   className={`btn btn-secondary btn-ai-translate ${isTranslating ? 'loading' : ''}`}
                   onClick={onAiTranslate}

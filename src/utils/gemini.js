@@ -11,10 +11,18 @@ export async function translatePLpgSQLWithAI({
   model = 'gemini-3.1-flash-lite', 
   apiVersion = 'v1',
   sourceDialect = 'postgres',
-  validationFeedback = null
+  validationFeedback = null,
+  schemaMap = null
 }) {
   if (!apiKey) {
     throw new Error('Google Gemini API Key is missing. Please provide it in settings.');
+  }
+
+  // Construct Schema Mapping instructions
+  let schemaMappingInstruction = '';
+  if (schemaMap && Object.keys(schemaMap).length > 0) {
+    const mappingsList = Object.entries(schemaMap).map(([oldS, newS]) => `'${oldS}' schema MUST be mapped to '[${newS}]'`).join(', ');
+    schemaMappingInstruction = ` Rewrite all schema qualifiers to match these mapped target schemas: ${mappingsList}.`;
   }
 
   // Construct URL with dynamic apiVersion (v1 or v1beta)
@@ -84,7 +92,7 @@ Ensure that:
 12. Sequences (.NEXTVAL): Map sequence usages seq_name.NEXTVAL to NEXT VALUE FOR [seq_name].
 13. Packages Namespacing: If the object was originally member of a package, prefix references to package state variables or other package procedures with explanatory warning comments. Declare the object name exactly as "${objectName}".
 14. SQL Server Function Constraints: SQL Server functions (scalar/table-valued) are highly restricted and CANNOT use THROW, TRY/CATCH blocks, transactions, or state-modifying actions (INSERT/UPDATE/DELETE). Rewrite functions violating these constraints as stored procedures.
-15. Identifier Wrapping & Schema mapping: Wrap EVERY schema, table, view, function, procedure, trigger, and column identifier in square brackets consistently — e.g. [schema].[name] or [table].[column], never schema.name.
+15. Identifier Wrapping & Schema mapping: Wrap EVERY schema, table, view, function, procedure, trigger, and column identifier in square brackets consistently — e.g. [schema].[name] or [table].[column], never schema.name.${schemaMappingInstruction}
 16. Batch Ending: End every CREATE VIEW / CREATE FUNCTION / CREATE PROCEDURE / CREATE TRIGGER object with GO on its own line immediately after the closing END or semicolon, since these must be the only statement in their batch in SQL Server. This is mandatory.
 17. Implicit Exceptions (NO_DATA_FOUND): When translating Oracle PL/SQL blocks containing SELECT ... INTO, detect if zero rows are returned by checking IF @@ROWCOUNT = 0 right after the query. If the original block had a separate EXCEPTION WHEN NO_DATA_FOUND handler (raising a distinct error code/message), preserve both the implicit not-found path (via @@ROWCOUNT check) and any explicit NULL-value check as separate, distinctly-messaged conditions. Do not merge them into one generic check without at minimum a comment explaining the simplification.
 18. MONTHS_BETWEEN Conversion: When converting Oracle MONTHS_BETWEEN(date1, date2) to T-SQL, map it to DATEDIFF(MONTH, date2, date1) and you MUST add this warning comment block directly above it:
@@ -158,7 +166,7 @@ Ensure that:
      DECLARE @ErrorMessage NVARCHAR(2048) = N'Order not found: ' + CAST(@p_order_id AS NVARCHAR(20));
      THROW 50001, @ErrorMessage, 1;
 4. SQL Server Function Constraints: SQL Server functions (scalar/table-valued) are highly restricted and CANNOT use THROW, RAISERROR, TRY/CATCH blocks, transactions (BEGIN TRAN/COMMIT), dynamic SQL, or perform state-modifying actions (INSERT/UPDATE/DELETE). If the original function does any of these, rewrite it using safe table-valued mappings, return status codes, or convert it to a SQL Server STORED PROCEDURE instead and add a warning comment block (-- WARNING: Converted to Stored Procedure due to side-effects/exception handling).
-5. Identifier Wrapping & Schema mapping: Wrap EVERY schema, table, view, function, procedure, trigger, and column identifier in square brackets consistently — e.g. [schema].[name] or [table].[column], never schema.name. Map the PostgreSQL "public" schema to "dbo" consistently across all statements (e.g. public.orders -> [dbo].[orders]).
+5. Identifier Wrapping & Schema mapping: Wrap EVERY schema, table, view, function, procedure, trigger, and column identifier in square brackets consistently — e.g. [schema].[name] or [table].[column], never schema.name. Map the schemas consistently across all statements based on this mapping: ${schemaMappingInstruction || 'Map public to dbo'}.
 6. Merged Triggers (Rule 8): If a PostgreSQL trigger function (RETURNS TRIGGER) and its CREATE TRIGGER statement are provided together as one merged unit, produce exactly ONE CREATE OR ALTER TRIGGER statement in T-SQL — combine the trigger's timing/events with the function's body logic. Use the inserted/deleted virtual tables in place of NEW/OLD. Do not produce a separate function or procedure object for trigger logic. Ensure the trigger logic is set-based (query [inserted] and [deleted] tables, rather than assuming single-row execution via FOR EACH ROW which is unsupported).
 7. TO_DATE Conversion: Map TO_DATE(expr, 'format') to TRY_CONVERT(DATE, expr, style_code) based on the format: 'YYYY-MM-DD' -> style 120, 'YYYY/MM/DD' -> style 111, 'DD/MM/YYYY' -> style 103, 'MM/DD/YYYY' -> style 101, 'DD-MM-YYYY' -> style 105, 'MM-DD-YYYY' -> style 110, 'YYYymmdd' -> style 112. If dynamic or CASE formats are used, e.g. TO_DATE(expr, CASE WHEN cond1 THEN 'fmt1' ELSE 'fmt2' END), rewrite it as: CASE WHEN cond1 THEN TRY_CONVERT(DATE, expr, style1) ELSE TRY_CONVERT(DATE, expr, style2) END.
 8. AGE() and DATE_PART('year', AGE()) Conversion: Rewrite AGE(dob) and AGE(now(), dob) using exact, boundary-safe age calculation: CASE WHEN DATEADD(YEAR, DATEDIFF(YEAR, DOB, GETDATE()), DOB) > GETDATE() THEN DATEDIFF(YEAR, DOB, GETDATE()) - 1 ELSE DATEDIFF(YEAR, DOB, GETDATE()) END. Use this calculation automatically for AGE() and DATE_PART('year', AGE()) or EXTRACT(YEAR FROM AGE()).

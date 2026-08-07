@@ -150,6 +150,21 @@ export default function SettingsPanel({ isOpen, onClose, settings, onUpdateSetti
               </label>
             </div>
 
+            <div className="checkbox-group" style={{ marginTop: '1rem' }}>
+              <label className="checkbox-container">
+                <input
+                  type="checkbox"
+                  checked={settings.preserveSchema ?? false}
+                  onChange={(e) => onUpdateSettings({ preserveSchema: e.target.checked })}
+                />
+                <span className="checkmark"></span>
+                <span className="checkbox-label">
+                  <strong>Preserve Original Schemas</strong>
+                  <span className="checkbox-desc">Creates custom schemas and routes objects to them instead of mapping all entities to the [dbo] schema.</span>
+                </span>
+              </label>
+            </div>
+
             <div className="input-group" style={{ marginTop: '1rem' }}>
               <label htmlFor="deployment-mode">T-SQL Deployment Mode</label>
               <select

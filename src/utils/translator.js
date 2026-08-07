@@ -908,7 +908,7 @@ export function translateTableConstraint(constraintText, warnings = null) {
  * Automagically translates classified objects into T-SQL.
  * PL/pgSQL objects will be returned with a tag indicating they require AI translation.
  */
-export function translateObject(obj, useUnicode = true, metadata = null, enums = null, domains = null, composites = null, schemaMap = { 'public': 'dbo' }, tableColumnsMap = {}, deploymentMode = 'migration', sqlServerVersion = '2017+', dialect = 'postgres') {
+export function translateObject(obj, useUnicode = true, metadata = null, enums = null, domains = null, composites = null, schemaMap = { 'public': 'dbo' }, tableColumnsMap = {}, deploymentMode = 'migration', sqlServerVersion = '2017+', dialect = 'postgres', metadataRepository = null) {
   const result = {
     tsql: '',
     warnings: [],
@@ -1170,6 +1170,16 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
         result.warnings.push(`Materialized View [${obj.schema}].[${obj.name}] is not converted. Materialized views have no direct T-SQL equivalent.`);
         break;
       }
+
+      const errors = validateQueryDependencies(obj.raw, obj.name, obj.type, metadataRepository, schemaMap);
+      if (errors && errors.length > 0) {
+        result.requiresAi = true;
+        result.tsql = `-- ERROR: [Validation Failure] View cannot compile due to missing objects/columns:\n` +
+                      errors.map(e => `-- - ${e}`).join('\n') + `\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+        result.warnings.push(...errors);
+        break;
+      }
+
       result.requiresAi = true;
       result.tsql = `-- PENDING AI TRANSLATION --\n-- The original VIEW object '${obj.name}' is written in ${dialect === 'oracle' ? 'Oracle SQL' : 'PostgreSQL'} logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
       result.warnings.push(`View '${obj.name}' is a ${dialect === 'oracle' ? 'Oracle' : 'PL/pgSQL'} database object. It requires translation by the AI model.`);
@@ -1178,6 +1188,16 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
 
     case 'PROCEDURE': {
       const packagePrefix = obj.parsed.isPackageMember ? `-- originally part of package ${obj.parsed.packageName}\n` : '';
+      
+      const errors = validateQueryDependencies(obj.raw, obj.name, obj.type, metadataRepository, schemaMap);
+      if (errors && errors.length > 0) {
+        result.requiresAi = true;
+        result.tsql = `${packagePrefix}-- ERROR: [Validation Failure] Procedure cannot compile due to missing objects/columns:\n` +
+                      errors.map(e => `-- - ${e}`).join('\n') + `\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+        result.warnings.push(...errors);
+        break;
+      }
+
       result.requiresAi = true;
       result.tsql = `${packagePrefix}-- PENDING AI TRANSLATION --\n-- The original PROCEDURE object '${obj.name}' is written in ${dialect === 'oracle' ? 'Oracle PL/SQL' : 'PostgreSQL PL/pgSQL'} logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
       result.warnings.push(`Procedure '${obj.name}' is a ${dialect === 'oracle' ? 'Oracle' : 'PL/pgSQL'} database object. It requires translation by the AI model.`);
@@ -1191,6 +1211,15 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
         result.tsql = `-- Merged into trigger [${obj.parsed.mergedTriggerName}] -- no separate object needed.`;
         result.warnings.push(`Trigger function '${obj.name}' was merged into trigger '${obj.parsed.mergedTriggerName}'. No separate object is generated.`);
       } else {
+        const errors = validateQueryDependencies(obj.raw, obj.name, obj.type, metadataRepository, schemaMap);
+        if (errors && errors.length > 0) {
+          result.requiresAi = true;
+          result.tsql = `${packagePrefix}-- ERROR: [Validation Failure] Function cannot compile due to missing objects/columns:\n` +
+                        errors.map(e => `-- - ${e}`).join('\n') + `\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+          result.warnings.push(...errors);
+          break;
+        }
+
         result.requiresAi = true;
         result.tsql = `${packagePrefix}-- PENDING AI TRANSLATION --\n-- The original FUNCTION object '${obj.name}' is written in ${dialect === 'oracle' ? 'Oracle PL/SQL' : 'PostgreSQL PL/pgSQL'} logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
         result.warnings.push(`Function '${obj.name}' is a ${dialect === 'oracle' ? 'Oracle' : 'PL/pgSQL'} database object. It requires translation by the AI model.`);
@@ -1200,10 +1229,28 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
 
     case 'TRIGGER': {
       if (obj.parsed.functionBody) {
+        const errors = validateQueryDependencies(obj.raw, obj.name, obj.type, metadataRepository, schemaMap);
+        if (errors && errors.length > 0) {
+          result.requiresAi = true;
+          result.tsql = `-- ERROR: [Validation Failure] Trigger cannot compile due to missing objects/columns:\n` +
+                        errors.map(e => `-- - ${e}`).join('\n') + `\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+          result.warnings.push(...errors);
+          break;
+        }
+
         result.requiresAi = true;
         result.tsql = `-- PENDING AI TRANSLATION (MERGED TRIGGER UNIT) --\n-- Trigger: [${obj.schema}].[${obj.name}] ON table [${obj.schema}].[${obj.parsed.tableName}]\n-- Timing: ${obj.parsed.timing}, Events: ${obj.parsed.events}\n-- Original trigger function logic will be merged into the T-SQL trigger block.\n-- Click 'AI Translate' to convert this combined block to SQL Server T-SQL.\n\n/* ORIGINAL POSTGRES TRIGGER:\n${obj.raw}\n\nORIGINAL TRIGGER FUNCTION CODE:\n${obj.parsed.functionBody}\n*/`;
         result.warnings.push(`Trigger '${obj.name}' references PL/pgSQL function '${obj.parsed.triggerFunctionName}'. Merged both statements into a single T-SQL CREATE TRIGGER conversion unit.`);
       } else {
+        const errors = validateQueryDependencies(obj.raw, obj.name, obj.type, metadataRepository, schemaMap);
+        if (errors && errors.length > 0) {
+          result.requiresAi = true;
+          result.tsql = `-- ERROR: [Validation Failure] Trigger cannot compile due to missing objects/columns:\n` +
+                        errors.map(e => `-- - ${e}`).join('\n') + `\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+          result.warnings.push(...errors);
+          break;
+        }
+
         result.requiresAi = true;
         result.tsql = `-- PENDING AI TRANSLATION --\n-- The original TRIGGER object '${obj.name}' is written in ${dialect === 'oracle' ? 'Oracle PL/SQL' : 'PostgreSQL'} logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
         result.warnings.push(`Trigger '${obj.name}' is a ${dialect === 'oracle' ? 'Oracle' : 'PL/pgSQL'} database object. It requires translation by the AI model.`);
@@ -1276,7 +1323,7 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
   }
 
   // Apply standard SQL conversion rules to clean up T-SQL output
-  result.tsql = applySqlConversionRules(result.tsql, useUnicode, schemaMap, tableColumnsMap, sqlServerVersion);
+  result.tsql = applySqlConversionRules(result.tsql, useUnicode, schemaMap, tableColumnsMap, sqlServerVersion, metadataRepository);
 
   // Validate generated SQL Server syntax before returning
   const tsqlValWarnings = validateTsql(result.tsql, obj.type, `${obj.schema}.${obj.name}`);
@@ -1747,7 +1794,7 @@ export function translateIntervals(sql) {
   return clean;
 }
 
-export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'public': 'dbo' }, tableColumnsMap = {}, sqlServerVersion = '2017+') {
+export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'public': 'dbo' }, tableColumnsMap = {}, sqlServerVersion = '2017+', metadataRepository = null) {
   let clean = sql;
 
   // 0. Remove MySQL WITH RECURSIVE and save recursion flag
@@ -1758,14 +1805,84 @@ export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'p
   clean = clean.replace(/`([^`]+)`/g, '[$1]');
   clean = clean.replace(/`/g, ''); // double guard for any stray backticks
 
-  // Schema qualify unqualified table references, ignoring CTE aliases and temp tables (#)
+  // Build set of known database objects in the active migration context
+  const knownObjects = new Set();
+  if (metadataRepository) {
+    Object.keys(metadataRepository.tables || {}).forEach(k => {
+      const parts = k.split('.');
+      knownObjects.add(parts[parts.length - 1].toLowerCase());
+    });
+    if (metadataRepository.views) {
+      metadataRepository.views.forEach(k => {
+        const parts = k.split('.');
+        knownObjects.add(parts[parts.length - 1].toLowerCase());
+      });
+    }
+    if (metadataRepository.functions) {
+      metadataRepository.functions.forEach(k => {
+        const parts = k.split('.');
+        knownObjects.add(parts[parts.length - 1].toLowerCase());
+      });
+    }
+    if (metadataRepository.procedures) {
+      metadataRepository.procedures.forEach(k => {
+        const parts = k.split('.');
+        knownObjects.add(parts[parts.length - 1].toLowerCase());
+      });
+    }
+    if (metadataRepository.sequences) {
+      metadataRepository.sequences.forEach(k => {
+        const parts = k.split('.');
+        knownObjects.add(parts[parts.length - 1].toLowerCase());
+      });
+    }
+  }
+  if (tableColumnsMap) {
+    Object.keys(tableColumnsMap).forEach(k => {
+      const parts = k.split('.');
+      knownObjects.add(parts[parts.length - 1].toLowerCase());
+    });
+  }
+
+  const sqlExclusions = new Set([
+    'as', 'begin', 'end', 'from', 'join', 'where', 'select', 'update', 'insert', 'delete',
+    'into', 'values', 'merge', 'on', 'group', 'by', 'order', 'having', 'and', 'or', 'not',
+    'in', 'is', 'null', 'set', 'declare', 'if', 'else', 'case', 'when', 'then', 'coalesce',
+    'isnull', 'cast', 'convert', 'go', 'exec', 'call', 'return', 'returns', 'with', 'recursive',
+    'inserted', 'deleted', 'sys', 'information_schema', 'dual', 'getdate', 'current_timestamp',
+    'newid', 'syscomments', 'sysobjects', 'sysindexes', 'sysusers', 'sysprotects', 'sysmembers',
+    'sysfilegroups', 'sysfiles', 'sysforeignkeys', 'sysconstraints', 'syscolumns', 'sysdepends',
+    'openquery', 'opendatasource', 'openrowset', 'openxml'
+  ]);
+
+  // Schema qualify unqualified table references, ignoring CTE aliases, temp tables (#) and variables (@)
   const cteNames = getCteNames(clean);
-  const tblRefRegex = /(\bFROM|\bJOIN|\bUPDATE|\bINTO|\bINSERT|\bMERGE\s+INTO)\s+((?!\[?(?:sys|INFORMATION_SCHEMA|inserted|deleted|dual)\]?)\b\[?([a-zA-Z0-9_#]+)\b\]?(?!\s*[\.\[]))/gi;
+  const tblRefRegex = /(\bFROM|\bJOIN|\bUPDATE|\bINTO|\bINSERT|\bMERGE\s+INTO)\s+((?!\[?(?:sys|INFORMATION_SCHEMA|inserted|deleted|dual)\]?)\b\[?([a-zA-Z0-9_#@]+)\b\]?(?!\s*[\.\[]))/gi;
   clean = clean.replace(tblRefRegex, (match, keyword, rawRef, tableName) => {
     const lowerName = tableName.toLowerCase();
-    if (tableName.startsWith('#') || cteNames.includes(lowerName)) {
+    
+    // Skip variables, temp tables, and local CTEs
+    if (tableName.startsWith('#') || tableName.startsWith('@') || cteNames.includes(lowerName)) {
       return match;
     }
+    
+    // Skip standard SQL keywords, trigger virtual tables, or common built-ins
+    if (sqlExclusions.has(lowerName)) {
+      return match;
+    }
+
+    // If we have known objects, restrict qualification only to registered ones
+    if (knownObjects.size > 0) {
+      if (!knownObjects.has(lowerName)) {
+        return match;
+      }
+    } else {
+      // Fallback mode: skip potential aliases (length <= 3) if not registered
+      if (lowerName.length <= 3) {
+        return match;
+      }
+    }
+
     const targetSchema = schemaMap['public'] || 'dbo';
     return `${keyword} [${targetSchema}].[${tableName}]`;
   });
@@ -1839,14 +1956,14 @@ export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'p
   // 3. EOMONTH + interval year subtraction
   const dateTruncEomonthRegex = /DATE_TRUNC\s*\(\s*'month'\s*,\s*([a-zA-Z0-9_\.\(\)\[\]'""\s+\-*\/]+?)\s*\)\s*-\s*interval\s+'1\s+day'/gi;
   clean = clean.replace(dateTruncEomonthRegex, (match, expr) => {
-    const translatedExpr = applySqlConversionRules(expr, useUnicode, schemaMap, tableColumnsMap, sqlServerVersion);
+    const translatedExpr = applySqlConversionRules(expr, useUnicode, schemaMap, tableColumnsMap, sqlServerVersion, metadataRepository);
     return `EOMONTH(${translatedExpr}, -1)`;
   });
 
   // 4. DATE_TRUNC mapping
   const dateTruncRegex = /DATE_TRUNC\s*\(\s*'(\w+)'\s*,\s*(.*?)\s*\)/gi;
   clean = clean.replace(dateTruncRegex, (match, unit, expr) => {
-    const translatedExpr = applySqlConversionRules(expr, useUnicode, schemaMap, tableColumnsMap, sqlServerVersion);
+    const translatedExpr = applySqlConversionRules(expr, useUnicode, schemaMap, tableColumnsMap, sqlServerVersion, metadataRepository);
     const u = unit.toLowerCase();
     if (u === 'year') {
       return `DATEADD(year, DATEDIFF(year, 0, ${translatedExpr}), 0)`;
@@ -2260,5 +2377,121 @@ export function getCteNames(sql) {
     cteNames.push(match[1].toLowerCase());
   }
   return cteNames;
+}
+
+function levenshtein(s1, s2) {
+  const m = s1.length, n = s2.length;
+  const d = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) d[i][0] = i;
+  for (let j = 0; j <= n; j++) d[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+    }
+  }
+  return d[m][n];
+}
+
+function findClosestColumn(colName, columnsList) {
+  let closest = '';
+  let minDist = Infinity;
+  columnsList.forEach(col => {
+    const dist = levenshtein(colName.toLowerCase(), col.toLowerCase());
+    if (dist < minDist) {
+      minDist = dist;
+      closest = col;
+    }
+  });
+  return minDist < 4 ? closest : null;
+}
+
+export function validateQueryDependencies(sql, objName, objType, metadataRepository, schemaMap = { 'public': 'dbo' }) {
+  if (!metadataRepository) return [];
+  const errors = [];
+  const cleanSql = sql.replace(/\/\*[\s\S]*?\*\//g, '').replace(/--.*/g, ''); // strip comments
+
+  // Find CTE names in query to ignore them as missing tables
+  const cteNames = getCteNames(cleanSql);
+
+  // 1. Find all table references
+  const tblRefRegex = /\b(?:FROM|JOIN|UPDATE|INTO|MERGE\s+INTO|REFERENCES)\s+([a-zA-Z0-9_.[\]]+)/gi;
+  let match;
+  const referencedTables = [];
+  while ((match = tblRefRegex.exec(cleanSql)) !== null) {
+    const fullRef = match[1].replace(/[\[\]]/g, '').trim();
+    if (['inserted', 'deleted', 'sys', 'information_schema', 'select', 'values', 'as', 'begin', 'set', 'declare'].includes(fullRef.toLowerCase())) {
+      continue;
+    }
+    if (cteNames.includes(fullRef.toLowerCase())) {
+      continue;
+    }
+    const parts = fullRef.split('.');
+    let refSchema = '';
+    let refName = '';
+    if (parts.length > 1) {
+      refSchema = parts[0].toLowerCase();
+      refName = parts[1].toLowerCase();
+    } else {
+      refSchema = 'dbo';
+      refName = parts[0].toLowerCase();
+    }
+    
+    // Map schema
+    const mappedSchema = schemaMap[refSchema] || 'dbo';
+    const refKey = `${mappedSchema}.${refName}`;
+    referencedTables.push({ key: refKey, schema: mappedSchema, name: refName, original: fullRef });
+    
+    // Validate table exists in metadata repository
+    const tableExists = metadataRepository.tables[refKey] || metadataRepository.views.has(refKey);
+    if (!tableExists && !refName.startsWith('#')) {
+      errors.push(`Table/View '${refKey}' referenced in ${objType} '${objName}' does not exist.`);
+    }
+  }
+
+  // 2. Find all referenced columns in the SQL
+  const tokens = cleanSql.match(/\b[a-zA-Z_][a-zA-Z0-9_]*\b/g) || [];
+  const uniqueTokens = [...new Set(tokens)];
+
+  uniqueTokens.forEach(token => {
+    const lowerToken = token.toLowerCase();
+    if (['select', 'from', 'where', 'and', 'or', 'join', 'on', 'group', 'by', 'order', 'having', 'insert', 'into', 'values', 'update', 'set', 'delete', 'dbo', 'public', 'count', 'sum', 'avg', 'min', 'max', 'null', 'not', 'in', 'is', 'as', 'create', 'view', 'procedure', 'function', 'trigger', 'end', 'begin', 'return', 'returns', 'declare', 'if', 'else', 'case', 'when', 'then', 'coalesce', 'isnull', 'cast', 'convert', 'go'].includes(lowerToken)) {
+      return;
+    }
+    
+    if (metadataRepository.functions.has(lowerToken) || metadataRepository.procedures.has(lowerToken) || cteNames.includes(lowerToken)) {
+      return;
+    }
+
+    let foundInAnyTable = false;
+    let checkedTablesCount = 0;
+    
+    referencedTables.forEach(tbl => {
+      const cols = metadataRepository.tables[tbl.key];
+      if (cols) {
+        checkedTablesCount++;
+        if (cols.some(c => c.toLowerCase() === lowerToken)) {
+          foundInAnyTable = true;
+        }
+      }
+    });
+
+    if (checkedTablesCount > 0 && !foundInAnyTable) {
+      const isTableName = referencedTables.some(t => t.name === lowerToken);
+      if (!isTableName) {
+        let suggestion = null;
+        referencedTables.forEach(tbl => {
+          const cols = metadataRepository.tables[tbl.key];
+          if (cols && !suggestion) {
+            suggestion = findClosestColumn(token, cols);
+          }
+        });
+
+        errors.push(`Column '${token}' referenced in ${objType} '${objName}' does not exist in any referenced tables.${suggestion ? ` Did you mean '${suggestion}'?` : ''}`);
+      }
+    }
+  });
+
+  return errors;
 }
 

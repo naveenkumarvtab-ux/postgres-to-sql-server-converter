@@ -32,19 +32,24 @@ export default function Workspace({
   const selectedObject = objects.find(obj => obj.classified.id === selectedObjectId);
 
   const getStatusIcon = (obj) => {
-    if (['VIEW', 'FUNCTION', 'PROCEDURE', 'TRIGGER'].includes(obj.classified.type)) {
-      if (isTranslatingMap[obj.classified.id]) {
-        return (
-          <span className="status-spinner-small" title="Translating..."></span>
-        );
-      }
-      if (obj.translation.tsql.includes('-- PENDING AI TRANSLATION --')) {
-        return (
-          <span className="status-indicator-dot warning" title="AI Translation Pending"></span>
-        );
-      }
+    if (isTranslatingMap[obj.classified.id]) {
       return (
-        <span className="status-indicator-dot success" title="Translated by AI"></span>
+        <span className="status-spinner-small" title="Translating..."></span>
+      );
+    }
+    
+    const isValidationFailure = obj.translation.tsql && obj.translation.tsql.includes('[Validation Failure]');
+    const isPendingAi = obj.translation.tsql && obj.translation.tsql.includes('-- PENDING AI TRANSLATION --');
+    
+    if (isValidationFailure) {
+      return (
+        <span className="status-indicator-dot warning" title="Validation Failed: Missing dependencies or columns"></span>
+      );
+    }
+    
+    if (isPendingAi) {
+      return (
+        <span className="status-indicator-dot warning" title="AI Translation Pending"></span>
       );
     }
     
@@ -53,6 +58,7 @@ export default function Workspace({
         <span className="status-indicator-dot warning" title="Converted with warnings"></span>
       );
     }
+    
     return (
       <span className="status-indicator-dot success" title="Successfully converted"></span>
     );

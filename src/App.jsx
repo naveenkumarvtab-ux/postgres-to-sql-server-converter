@@ -7,7 +7,7 @@ import SummaryReport from './components/SummaryReport';
 import AuthModal from './components/AuthModal';
 import ResetPasswordModal from './components/ResetPasswordModal';
 import { supabase } from './utils/supabaseClient';
-import { splitSqlStatements, classifyStatement, splitOraclePackageBody } from './utils/parser';
+import { splitSqlStatements, classifyStatement, splitOraclePackageBody, buildSchemaMap } from './utils/parser';
 import { translateObject, resolveDependencies } from './utils/translator';
 import { translatePLpgSQLWithAI } from './utils/gemini';
 import { validateMigration } from './utils/validator';
@@ -27,6 +27,7 @@ export default function App() {
   const [isResettingPassword, setIsResettingPassword] = useState(false);
   const [resetToken, setResetToken] = useState(null);
   const [validationReport, setValidationReport] = useState(null);
+  const [originalFileName, setOriginalFileName] = useState('schema.sql');
 
   useEffect(() => {
     if (objects.length === 0) {
@@ -214,6 +215,25 @@ export default function App() {
           }
         });
 
+        const activeSchemaMap = buildSchemaMap(rawClassified, updated.preserveSchema);
+        const metadataRepository = {
+          tables: tableColumnsMap,
+          views: new Set(),
+          functions: new Set(),
+          procedures: new Set(),
+          triggers: new Set(),
+          sequences: new Set(),
+          schemas: new Set(Object.keys(activeSchemaMap))
+        };
+        rawClassified.forEach(cObj => {
+          const k = `${cObj.schema.toLowerCase()}.${cObj.name.toLowerCase()}`;
+          if (cObj.type === 'VIEW') metadataRepository.views.add(k);
+          if (cObj.type === 'FUNCTION') metadataRepository.functions.add(k);
+          if (cObj.type === 'PROCEDURE') metadataRepository.procedures.add(k);
+          if (cObj.type === 'TRIGGER') metadataRepository.triggers.add(k);
+          if (cObj.type === 'SEQUENCE') metadataRepository.sequences.add(k);
+        });
+
         const newObjects = rawClassified.map(classified => {
           const existing = objects.find(o => o.classified.id === classified.id);
           if (existing && existing.translation && !existing.translation.requiresAi && existing.translation.tsql && !existing.translation.tsql.includes('PENDING AI TRANSLATION')) {
@@ -226,11 +246,12 @@ export default function App() {
             enumsMap, 
             domainsMap, 
             compositesMap,
-            { 'public': 'dbo' },
+            activeSchemaMap,
             tableColumnsMap,
             updated.deploymentMode || 'migration',
             updated.sqlServerVersion || '2017+',
-            sourceDialect
+            sourceDialect,
+            metadataRepository
           );
           return {
             classified,
@@ -244,26 +265,45 @@ export default function App() {
     });
   };
 
-  const handleFilesUploaded = (sqlContent, fileName, uploadedMetadata, uploadedDialect = 'postgres') => {
+  const handleFilesUploaded = (sqlContentOrFiles, fileName, uploadedMetadata, uploadedDialect = 'postgres') => {
     setMetadata(uploadedMetadata);
     setSourceDialect(uploadedDialect);
     
-    // 1. Split SQL statements safely
-    const rawStatements = splitSqlStatements(sqlContent, uploadedDialect);
-    
-    // 2. First pass: classify statements and gather all custom enums
-    const classifiedStatements = rawStatements.map(stmt => classifyStatement(stmt, uploadedDialect));
-    
-    // 2a. If dialect is Oracle, splice package body sub-members
+    let filesToProcess = [];
+    if (Array.isArray(sqlContentOrFiles)) {
+      filesToProcess = sqlContentOrFiles;
+      setOriginalFileName(fileName || 'schema.zip');
+    } else {
+      filesToProcess = [{ name: fileName || 'schema.sql', content: sqlContentOrFiles }];
+      setOriginalFileName(fileName || 'schema.sql');
+    }
+
     let finalClassStatements = [];
-    classifiedStatements.forEach(obj => {
-      if (obj.type === 'ORACLE_PACKAGE_BODY') {
-        finalClassStatements.push(obj);
-        const members = splitOraclePackageBody(obj.raw, obj.name, obj.schema);
-        finalClassStatements.push(...members);
-      } else {
-        finalClassStatements.push(obj);
-      }
+
+    filesToProcess.forEach(file => {
+      // 1. Split SQL statements safely
+      const rawStatements = splitSqlStatements(file.content, uploadedDialect);
+      
+      // 2. First pass: classify statements
+      const classifiedStatements = rawStatements.map(stmt => {
+        const obj = classifyStatement(stmt, uploadedDialect);
+        obj.sourceFile = file.name; // Keep track of original source file!
+        return obj;
+      });
+      
+      // 2a. If dialect is Oracle, splice package body sub-members
+      classifiedStatements.forEach(obj => {
+        if (obj.type === 'ORACLE_PACKAGE_BODY') {
+          finalClassStatements.push(obj);
+          const members = splitOraclePackageBody(obj.raw, obj.name, obj.schema);
+          members.forEach(m => {
+            m.sourceFile = file.name;
+          });
+          finalClassStatements.push(...members);
+        } else {
+          finalClassStatements.push(obj);
+        }
+      });
     });
 
     const enumsMap = {};
@@ -332,6 +372,25 @@ export default function App() {
       }
     }
 
+    const activeSchemaMap = buildSchemaMap(finalClassStatements, settings.preserveSchema);
+    const metadataRepository = {
+      tables: tableColumnsMap,
+      views: new Set(),
+      functions: new Set(),
+      procedures: new Set(),
+      triggers: new Set(),
+      sequences: new Set(),
+      schemas: new Set(Object.keys(activeSchemaMap))
+    };
+    finalClassStatements.forEach(cObj => {
+      const k = `${cObj.schema.toLowerCase()}.${cObj.name.toLowerCase()}`;
+      if (cObj.type === 'VIEW') metadataRepository.views.add(k);
+      if (cObj.type === 'FUNCTION') metadataRepository.functions.add(k);
+      if (cObj.type === 'PROCEDURE') metadataRepository.procedures.add(k);
+      if (cObj.type === 'TRIGGER') metadataRepository.triggers.add(k);
+      if (cObj.type === 'SEQUENCE') metadataRepository.sequences.add(k);
+    });
+
     // 3. Second pass: translate statements passing the context
     const processedObjects = finalClassStatements.map(classified => {
       const translation = translateObject(
@@ -341,11 +400,12 @@ export default function App() {
         enumsMap, 
         domainsMap, 
         compositesMap,
-        { 'public': 'dbo' },
+        activeSchemaMap,
         tableColumnsMap,
         settings.deploymentMode || 'migration',
         settings.sqlServerVersion || '2017+',
-        uploadedDialect
+        uploadedDialect,
+        metadataRepository
       );
       return {
         classified,
@@ -380,6 +440,8 @@ export default function App() {
     const triggerFunctionSql = objToTranslate.classified.type === 'TRIGGER' ? 
                                objToTranslate.classified.parsed.functionBody : null;
 
+    const activeSchemaMap = buildSchemaMap(currentObjects.map(o => o.classified), settings.preserveSchema);
+
     while (retries <= maxRetries) {
       translatedSql = await translatePLpgSQLWithAI({
         apiKey: settings.apiKey,
@@ -389,7 +451,8 @@ export default function App() {
         triggerFunctionSql,
         model: settings.model,
         sourceDialect: sourceDialect,
-        validationFeedback: validationFeedback
+        validationFeedback: validationFeedback,
+        schemaMap: activeSchemaMap
       });
 
       let finalTsql = translatedSql.trim();
@@ -609,6 +672,8 @@ export default function App() {
             onReset={handleReset}
             onBackToWorkspace={() => setStep('workspace')}
             sourceDialect={sourceDialect}
+            originalFileName={originalFileName}
+            preserveSchema={settings.preserveSchema}
           />
         )}
       </div>

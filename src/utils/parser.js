@@ -1280,3 +1280,24 @@ export function splitOraclePackageBody(rawSql, packageName, schema = 'public') {
 
   return subObjects;
 }
+
+export function buildSchemaMap(classifiedStatements, preserveSchema) {
+  const detectedSchemas = new Set();
+  classifiedStatements.forEach(obj => {
+    if (obj.schema) {
+      detectedSchemas.add(obj.schema.toLowerCase());
+    }
+  });
+
+  const map = {};
+  detectedSchemas.forEach(s => {
+    if (s === 'public') {
+      map['public'] = 'dbo';
+    } else if (preserveSchema) {
+      map[s] = s;
+    } else {
+      map[s] = 'dbo';
+    }
+  });
+  return map;
+}

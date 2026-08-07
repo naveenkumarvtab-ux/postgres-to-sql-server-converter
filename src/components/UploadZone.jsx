@@ -74,15 +74,39 @@ export default function UploadZone({ onFilesUploaded }) {
       const zipFile = files.find(f => f.name.endsWith('.zip'));
 
       if (zipFile) {
-        const { sql, meta } = await processZipFile(zipFile);
-        if (sql) setSqlFile(sql);
-        if (meta) {
-          setMetaFile(meta);
-        } else {
-          setMetaFile(zipFile);
+        try {
+          const arrayBuffer = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => resolve(e.target.result);
+            reader.onerror = (err) => reject(err);
+            reader.readAsArrayBuffer(zipFile);
+          });
+          const zip = await JSZip.loadAsync(arrayBuffer);
+          const hasMultipleSql = Object.keys(zip.files).some(name => {
+            const low = name.toLowerCase();
+            return low.endsWith('.sql') || low.endsWith('.dump') || low.endsWith('.dmp') || low.endsWith('.txt') || low.endsWith('.bak');
+          });
+          
+          if (hasMultipleSql) {
+            setSqlFile(zipFile);
+          } else {
+            const { sql, meta } = await processZipFile(zipFile);
+            if (sql) setSqlFile(sql);
+            if (meta) {
+              setMetaFile(meta);
+            } else {
+              setMetaFile(zipFile);
+            }
+          }
+        } catch (err) {
+          console.error('Error reading dropped zip file:', err);
+          setSqlFile(zipFile);
         }
       } else {
-        const sql = files.find(f => f.name.endsWith('.sql'));
+        const sql = files.find(f => {
+          const low = f.name.toLowerCase();
+          return low.endsWith('.sql') || low.endsWith('.dump') || low.endsWith('.dmp') || low.endsWith('.txt') || low.endsWith('.bak');
+        });
         const meta = files.find(f => f.name.endsWith('.json') || f.name.endsWith('.csv'));
         
         if (sql) setSqlFile(sql);
@@ -122,8 +146,62 @@ export default function UploadZone({ onFilesUploaded }) {
     if (metaInputRef.current) metaInputRef.current.value = '';
   };
 
-  const handleProcess = () => {
+  const handleProcess = async () => {
     if (!sqlFile) return;
+
+    if (sqlFile.name.endsWith('.zip')) {
+      try {
+        const arrayBuffer = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (e) => resolve(e.target.result);
+          reader.onerror = (err) => reject(err);
+          reader.readAsArrayBuffer(sqlFile);
+        });
+        
+        const zip = await JSZip.loadAsync(arrayBuffer);
+        const sqlFilesList = [];
+        const metaFilesList = [];
+        
+        for (const filename of Object.keys(zip.files)) {
+          const file = zip.files[filename];
+          if (file.dir) continue;
+          
+          const lowerName = filename.toLowerCase();
+          if (lowerName.endsWith('.sql') || lowerName.endsWith('.dump') || lowerName.endsWith('.dmp') || lowerName.endsWith('.txt') || lowerName.endsWith('.bak')) {
+            const content = await file.async('string');
+            sqlFilesList.push({ name: filename, content });
+          } else if (lowerName.endsWith('.json') || lowerName.endsWith('.csv')) {
+            const content = await file.async('string');
+            metaFilesList.push({ name: filename, content });
+          }
+        }
+        
+        if (sqlFilesList.length === 0) {
+          alert('No database schema scripts (.sql, .dump, .dmp, .txt, .bak) found inside the ZIP file!');
+          return;
+        }
+        
+        let parsedMeta = null;
+        if (metaFilesList.length > 0) {
+          const mainMeta = metaFilesList[0];
+          try {
+            if (mainMeta.name.endsWith('.json')) {
+              parsedMeta = JSON.parse(mainMeta.content);
+            } else {
+              parsedMeta = parseCsv(mainMeta.content);
+            }
+          } catch (e) {
+            console.error('Failed to parse metadata from ZIP:', e);
+          }
+        }
+        
+        onFilesUploaded(sqlFilesList, sqlFile.name, parsedMeta, sourceDialect);
+      } catch (err) {
+        console.error('Failed to process schema ZIP archive:', err);
+        alert('Error reading schema ZIP archive: ' + err.message);
+      }
+      return;
+    }
 
     const sqlReader = new FileReader();
     sqlReader.onload = (e) => {
@@ -556,7 +634,7 @@ export default function UploadZone({ onFilesUploaded }) {
           </div>
           <h3>Prepare your {getDialectName()} migration package</h3>
           <p className="dropzone-sub">
-            Drag & drop your {getDialectName()} `.sql` schema dump script, and optional CSV/JSON column metadata definitions.
+            Drag & drop your {getDialectName()} schema file (.sql, .dump, .dmp, .txt, .bak, .zip), and optional CSV/JSON column metadata definitions.
           </p>
         </div>
 
@@ -567,7 +645,7 @@ export default function UploadZone({ onFilesUploaded }) {
               type="file" 
               ref={sqlInputRef} 
               style={{ display: 'none' }} 
-              accept=".sql" 
+              accept=".sql,.dump,.dmp,.txt,.bak,.zip" 
               onChange={handleSqlChange} 
             />
             <div className="slot-icon">
@@ -577,8 +655,8 @@ export default function UploadZone({ onFilesUploaded }) {
               </svg>
             </div>
             <div className="slot-info">
-              <h4>Schema Script (.sql)</h4>
-              <p>{sqlFile ? sqlFile.name : `Choose primary ${getDialectName()} file`}</p>
+              <h4>Schema script or ZIP folder (.sql, .dump, .dmp, .txt, .bak, .zip)</h4>
+              <p>{sqlFile ? sqlFile.name : `Choose primary ${getDialectName()} files`}</p>
             </div>
             {sqlFile && (
               <button className="btn-remove" onClick={removeSqlFile} aria-label="Remove SQL file" title="Remove SQL file">

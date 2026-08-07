@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import JSZip from 'jszip';
 
 function sortTopologically(list, allObjects) {
   const result = [];
@@ -39,18 +40,19 @@ function sortTopologically(list, allObjects) {
   return result;
 }
 
-export default function SummaryReport({ objects, validationReport, onReset, onBackToWorkspace, sourceDialect }) {
+export default function SummaryReport({ objects, validationReport, onReset, onBackToWorkspace, sourceDialect, originalFileName, preserveSchema }) {
   const [activeTab, setActiveTab] = useState('metrics');
   const [allowExportAnyway, setAllowExportAnyway] = useState(false);
+  const [downloadFormat, setDownloadFormat] = useState(() => {
+    return originalFileName && originalFileName.endsWith('.zip') ? 'zip' : 'sql';
+  });
   
   const pendingCount = useMemo(() => {
     return objects.filter(o => o.translation.requiresAi).length;
   }, [objects]);
 
-  // Order of categories for final assembly
   const categoryOrder = ['SCHEMA', 'EXTENSION', 'ENUM', 'DOMAIN', 'COMPOSITE', 'SEQUENCE', 'TABLE', 'CONSTRAINT', 'INDEX', 'VIEW', 'FUNCTION', 'PROCEDURE', 'TRIGGER', 'DATA', 'OTHER'];
 
-  // Aggregate metrics and organize code
   const reportData = useMemo(() => {
     const stats = {
       total: objects.length,
@@ -63,21 +65,19 @@ export default function SummaryReport({ objects, validationReport, onReset, onBa
       TABLE: 0,
       INDEX: 0,
       CONSTRAINT: 0,
-      complex: 0, // VIEWS, FUNCTIONS, PROCEDURES, TRIGGERS
+      complex: 0, 
       warnings: 0
     };
 
     const warningsList = [];
     const orderedScripts = [];
 
-    // Group objects by type
     const grouped = {};
     categoryOrder.forEach(type => {
       grouped[type] = [];
     });
 
     objects.forEach(obj => {
-      // Update stats
       if (stats[obj.classified.type] !== undefined) {
         stats[obj.classified.type]++;
       }
@@ -85,7 +85,6 @@ export default function SummaryReport({ objects, validationReport, onReset, onBa
         stats.complex++;
       }
 
-      // Track warnings
       if (obj.translation.warnings && obj.translation.warnings.length > 0) {
         stats.warnings += obj.translation.warnings.length;
         obj.translation.warnings.forEach(warn => {
@@ -97,7 +96,6 @@ export default function SummaryReport({ objects, validationReport, onReset, onBa
         });
       }
 
-      // Add to group
       if (grouped[obj.classified.type]) {
         grouped[obj.classified.type].push(obj);
       } else {
@@ -105,16 +103,162 @@ export default function SummaryReport({ objects, validationReport, onReset, onBa
       }
     });
 
-    // Assemble ordered SQL
-    categoryOrder.forEach(type => {
+    if (preserveSchema) {
+      const detectedSchemas = new Set();
+      objects.forEach(obj => {
+        if (obj.classified.schema && obj.classified.schema.toLowerCase() !== 'dbo' && obj.classified.schema.toLowerCase() !== 'public') {
+          detectedSchemas.add(obj.classified.schema.toLowerCase());
+        }
+      });
+      if (detectedSchemas.size > 0) {
+        orderedScripts.push(`\n-- =========================================================\n-- CREATE SCHEMAS\n-- =========================================================\n`);
+        detectedSchemas.forEach(s => {
+          orderedScripts.push(`IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = '${s}')`);
+          orderedScripts.push(`BEGIN`);
+          orderedScripts.push(`    EXEC('CREATE SCHEMA [${s}]');`);
+          orderedScripts.push(`END\nGO\n`);
+        });
+      }
+    }
+
+    // Helper: strip inline DROP ... IF EXISTS statements from an object's T-SQL
+    // so they can be emitted separately in reverse dependency order
+    const stripInlineDrops = (tsql) => {
+      if (!tsql) return tsql;
+      return tsql
+        .replace(/^DROP\s+(TABLE|SEQUENCE|INDEX|VIEW|FUNCTION|PROCEDURE|TRIGGER)\s+IF\s+EXISTS\s+[^;]*;\s*\n?GO\s*\n?/gim, '')
+        .replace(/^ALTER\s+TABLE\s+[^\n]*DROP\s+CONSTRAINT\s+IF\s+EXISTS\s+[^;]*;\s*\n?GO\s*\n?/gim, '')
+        .replace(/^DROP\s+INDEX\s+IF\s+EXISTS\s+[^\n]*;\s*\n?GO\s*\n?/gim, '')
+        .trim();
+    };
+
+    // Helper: extract the DROP statement from an object's T-SQL (returns null if none found)
+    const extractDropStatement = (tsql) => {
+      if (!tsql) return null;
+      const drops = [];
+      // Match DROP TABLE/SEQUENCE/VIEW/FUNCTION/PROCEDURE/TRIGGER IF EXISTS ...;GO
+      const dropRegex = /^(DROP\s+(?:TABLE|SEQUENCE|VIEW|FUNCTION|PROCEDURE|TRIGGER)\s+IF\s+EXISTS\s+[^;]*;\s*\n?GO)/gim;
+      let m;
+      while ((m = dropRegex.exec(tsql)) !== null) {
+        drops.push(m[1].trim());
+      }
+      // Match ALTER TABLE ... DROP CONSTRAINT IF EXISTS ...;GO
+      const constraintDropRegex = /^(ALTER\s+TABLE\s+[^\n]*DROP\s+CONSTRAINT\s+IF\s+EXISTS\s+[^;]*;\s*\n?GO)/gim;
+      while ((m = constraintDropRegex.exec(tsql)) !== null) {
+        drops.push(m[1].trim());
+      }
+      // Match DROP INDEX IF EXISTS ...;GO
+      const indexDropRegex = /^(DROP\s+INDEX\s+IF\s+EXISTS\s+[^\n]*;\s*\n?GO)/gim;
+      while ((m = indexDropRegex.exec(tsql)) !== null) {
+        drops.push(m[1].trim());
+      }
+      return drops.length > 0 ? drops.join('\n') : null;
+    };
+
+    // --- Phase 1: Sort all object categories ---
+    const sortedByType = {};
+    ['SCHEMA', 'EXTENSION', 'ENUM', 'DOMAIN', 'COMPOSITE', 'SEQUENCE', 'TABLE', 'CONSTRAINT', 'INDEX'].forEach(type => {
+      const list = grouped[type];
+      if (list && list.length > 0) {
+        sortedByType[type] = sortTopologically(list, objects);
+      }
+    });
+
+    const routinesList = [
+      ...grouped['VIEW'],
+      ...grouped['FUNCTION'],
+      ...grouped['PROCEDURE'],
+      ...grouped['TRIGGER']
+    ];
+    const sortedRoutines = routinesList.length > 0 ? sortTopologically(routinesList, objects) : [];
+
+    // --- Phase 2: Emit DROP statements in REVERSE dependency order ---
+    // Collect all droppable objects from routines + structural types that have DROP statements
+    const allDroppableCategories = ['INDEX', 'CONSTRAINT', 'TABLE', 'SEQUENCE'];
+    const reverseDrops = [];
+
+    // Routines first (reverse of their creation order)
+    if (sortedRoutines.length > 0) {
+      const reversedRoutines = [...sortedRoutines].reverse();
+      reversedRoutines.forEach(obj => {
+        const tsql = obj.translation.tsql;
+        const dropStmt = extractDropStatement(tsql);
+        if (dropStmt) {
+          reverseDrops.push(`-- Drop: [${obj.classified.type}] ${obj.classified.schema}.${obj.classified.name}`);
+          reverseDrops.push(dropStmt);
+        } else {
+          // Generate a synthetic DROP for routines that use CREATE OR ALTER
+          const type = obj.classified.type;
+          const schema = obj.classified.schema;
+          const name = obj.classified.name;
+          if (['VIEW', 'FUNCTION', 'PROCEDURE', 'TRIGGER'].includes(type)) {
+            reverseDrops.push(`-- Drop: [${type}] ${schema}.${name}`);
+            reverseDrops.push(`DROP ${type} IF EXISTS [${schema}].[${name}];\nGO`);
+          }
+        }
+      });
+    }
+
+    // Structural objects in reverse order (indexes, constraints, tables, sequences)
+    allDroppableCategories.forEach(type => {
+      const sorted = sortedByType[type];
+      if (sorted && sorted.length > 0) {
+        const reversed = [...sorted].reverse();
+        reversed.forEach(obj => {
+          const tsql = obj.translation.tsql;
+          const dropStmt = extractDropStatement(tsql);
+          if (dropStmt) {
+            reverseDrops.push(`-- Drop: [${obj.classified.type}] ${obj.classified.schema}.${obj.classified.name}`);
+            reverseDrops.push(dropStmt);
+          } else if (type === 'TABLE') {
+            // Generate synthetic DROP for tables in deployment mode (IF NOT EXISTS)
+            reverseDrops.push(`-- Drop: [TABLE] ${obj.classified.schema}.${obj.classified.name}`);
+            reverseDrops.push(`DROP TABLE IF EXISTS [${obj.classified.schema}].[${obj.classified.name}];\nGO`);
+          }
+        });
+      }
+    });
+
+    if (reverseDrops.length > 0) {
+      orderedScripts.push(`\n-- =========================================================\n-- DROP EXISTING OBJECTS (reverse dependency order)\n-- Child/dependent objects are dropped before their parents\n-- to avoid foreign key constraint violations on re-run.\n-- =========================================================\n`);
+      reverseDrops.forEach(line => orderedScripts.push(line));
+      orderedScripts.push('');
+    }
+
+    // --- Phase 3: Emit CREATE statements in FORWARD dependency order ---
+    ['SCHEMA', 'EXTENSION', 'ENUM', 'DOMAIN', 'COMPOSITE', 'SEQUENCE', 'TABLE', 'CONSTRAINT', 'INDEX'].forEach(type => {
+      const sortedList = sortedByType[type];
+      if (sortedList && sortedList.length > 0) {
+        orderedScripts.push(`\n-- =========================================================\n-- TYPE: ${type}\n-- =========================================================\n`);
+        sortedList.forEach(obj => {
+          orderedScripts.push(`-- Object: [${obj.classified.type}] ${obj.classified.schema}.${obj.classified.name}`);
+          // Strip inline DROP statements since they were already emitted above
+          const cleanTsql = stripInlineDrops(obj.translation.tsql);
+          orderedScripts.push(cleanTsql);
+          orderedScripts.push(''); 
+        });
+      }
+    });
+
+    if (sortedRoutines.length > 0) {
+      orderedScripts.push(`\n-- =========================================================\n-- TYPE: ROUTINES (VIEWS, FUNCTIONS, PROCEDURES, TRIGGERS)\n-- =========================================================\n`);
+      sortedRoutines.forEach(obj => {
+        orderedScripts.push(`-- Object: [${obj.classified.type}] ${obj.classified.schema}.${obj.classified.name}`);
+        orderedScripts.push(obj.translation.tsql);
+        orderedScripts.push('');
+      });
+    }
+
+    ['DATA', 'OTHER'].forEach(type => {
       const list = grouped[type];
       if (list && list.length > 0) {
         const sortedList = type === 'DATA' ? list : sortTopologically(list, objects);
         orderedScripts.push(`\n-- =========================================================\n-- TYPE: ${type}\n-- =========================================================\n`);
         sortedList.forEach(obj => {
-          orderedScripts.push(`-- Object: [${obj.classified.type}] ${obj.classified.schema}.${obj.classified.name}`);
-          orderedScripts.push(obj.translation.tsql);
-          orderedScripts.push(''); // spacing
+          if (obj.translation.tsql) {
+            orderedScripts.push(obj.translation.tsql);
+            orderedScripts.push('');
+          }
         });
       }
     });
@@ -126,9 +270,94 @@ export default function SummaryReport({ objects, validationReport, onReset, onBa
       warningsList,
       combinedSql
     };
-  }, [objects]);
+  }, [objects, preserveSchema]);
+
+  const downloadZipFile = async () => {
+    const zip = new JSZip();
+    
+    // Group objects by their source file
+    const fileGroups = {};
+    objects.forEach(obj => {
+      const fileName = obj.classified.sourceFile || 'schema.sql';
+      if (!fileGroups[fileName]) {
+        fileGroups[fileName] = [];
+      }
+      fileGroups[fileName].push(obj);
+    });
+    
+    // For each file group, sort topologically and assemble T-SQL content
+    Object.keys(fileGroups).forEach(fileName => {
+      const fileObjects = fileGroups[fileName];
+      
+      const dataObjects = fileObjects.filter(o => o.classified.type === 'DATA');
+      const ddlObjects = fileObjects.filter(o => o.classified.type !== 'DATA');
+      const sortedDdl = sortTopologically(ddlObjects, objects);
+      const combinedObjects = [...sortedDdl, ...dataObjects];
+      
+      let tsqlContent = '';
+      combinedObjects.forEach(obj => {
+        if (obj.translation.tsql) {
+          tsqlContent += obj.translation.tsql + '\n\n';
+        }
+      });
+      
+      let targetFileName = fileName;
+      const lastDot = fileName.lastIndexOf('.');
+      if (lastDot !== -1) {
+        const ext = fileName.substring(lastDot);
+        const namePart = fileName.substring(0, lastDot);
+        targetFileName = `${namePart}_sql_server${ext}`;
+      } else {
+        targetFileName = `${fileName}_sql_server.sql`;
+      }
+      
+      zip.file(targetFileName, tsqlContent.trim());
+    });
+    
+    const mdReport = `# Database Schema Conversion Report
+Generated by TranspileDB on ${new Date().toLocaleDateString()}
+
+## Summary Metrics
+- **Total Objects Parsed**: ${objects.length}
+- **Dialect**: ${sourceDialect.toUpperCase()}
+
+*Detailed report generated inside individual files.*
+`;
+    zip.file('migration_report.md', mdReport);
+    
+    try {
+      const content = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(content);
+      const a = document.createElement('a');
+      a.href = url;
+      
+      let zipName = 'converted_sql_server_schema.zip';
+      if (originalFileName) {
+        const lastDot = originalFileName.lastIndexOf('.');
+        if (lastDot !== -1) {
+          const namePart = originalFileName.substring(0, lastDot);
+          zipName = `${namePart}_sql_server.zip`;
+        } else {
+          zipName = `${originalFileName}_sql_server.zip`;
+        }
+      }
+      a.download = zipName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to generate ZIP archive:', err);
+      alert('Error creating ZIP: ' + err.message);
+    }
+  };
 
   const downloadSqlFile = () => {
+    if (downloadFormat === 'zip') {
+      downloadZipFile();
+      return;
+    }
+
     const blob = new Blob([reportData.combinedSql], { type: 'text/sql' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -266,7 +495,7 @@ _Note: Double check all functions and trigger behaviors before deploying to prod
             Validation Report
           </button>
 
-          <div className="panel-tab-actions">
+          <div className="panel-tab-actions" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <button className="btn btn-secondary btn-sm" onClick={downloadReportFile}>
               <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -277,18 +506,41 @@ _Note: Double check all functions and trigger behaviors before deploying to prod
               </svg>
               Download Report
             </button>
-            <button 
-              className={`btn btn-primary btn-sm ${pendingCount > 0 && !allowExportAnyway ? 'disabled' : ''}`} 
-              onClick={downloadSqlFile}
-              disabled={pendingCount > 0 && !allowExportAnyway}
-            >
-              <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="7 10 12 15 17 10" />
-                <line x1="12" y1="15" x2="12" y2="3" />
-              </svg>
-              Download SQL Script
-            </button>
+            
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <select
+                value={downloadFormat}
+                onChange={(e) => setDownloadFormat(e.target.value)}
+                style={{
+                  height: '32px',
+                  padding: '0 8px',
+                  borderRadius: '6px',
+                  fontSize: '12px',
+                  fontWeight: '500',
+                  border: '1px solid rgba(255, 255, 255, 0.15)',
+                  background: 'rgba(255, 255, 255, 0.05)',
+                  color: 'var(--text-primary)',
+                  cursor: 'pointer',
+                  outline: 'none'
+                }}
+              >
+                <option value="sql">.sql (Combined Script)</option>
+                <option value="zip">.zip (Folder Structure)</option>
+              </select>
+
+              <button 
+                className={`btn btn-primary btn-sm ${pendingCount > 0 && !allowExportAnyway ? 'disabled' : ''}`} 
+                onClick={downloadSqlFile}
+                disabled={pendingCount > 0 && !allowExportAnyway}
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                Download Script
+              </button>
+            </div>
           </div>
         </div>
 
@@ -348,6 +600,106 @@ _Note: Double check all functions and trigger behaviors before deploying to prod
                 <h3 style={{ margin: '0 0 0.4rem 0', fontSize: '1.2rem', fontWeight: '800' }}>Post-Conversion Validation Report</h3>
                 <p style={{ margin: 0, fontSize: '0.88rem', color: 'var(--text-secondary)' }}>The schema validation engine scanned the converted T-SQL code for compiler compatibility, broken references, data types, and PG-specific leaks.</p>
               </div>
+
+              {/* 📊 Migration Validation Report Dashboard */}
+              {(() => {
+                const uniqueSchemas = new Set(objects.map(o => o.classified.schema ? o.classified.schema.toLowerCase() : 'public'));
+                const schemasParsedCount = uniqueSchemas.size;
+                const schemasCreatedCount = preserveSchema ? [...uniqueSchemas].filter(s => s !== 'dbo' && s !== 'public').length : 1;
+                const tablesCount = objects.filter(o => o.classified.type === 'TABLE').length;
+                const viewsCount = objects.filter(o => o.classified.type === 'VIEW').length;
+                const functionsCount = objects.filter(o => o.classified.type === 'FUNCTION').length;
+                const proceduresCount = objects.filter(o => o.classified.type === 'PROCEDURE').length;
+                const triggersCount = objects.filter(o => o.classified.type === 'TRIGGER').length;
+                
+                const schemaRefFixedCount = objects.filter(o => o.classified.schema && o.classified.schema.toLowerCase() !== 'dbo').length;
+                const brokenDepsCount = validationReport?.errors.filter(e => e.description.toLowerCase().includes('broken dependency') || e.description.toLowerCase().includes('does not exist')).length || 0;
+                const depsResolvedPct = objects.length > 0 ? Math.round(((objects.length - brokenDepsCount) / objects.length) * 100) : 100;
+                const missingTablesCount = validationReport?.errors.filter(e => e.description.toLowerCase().includes('referenced table or view') && e.description.toLowerCase().includes('does not exist')).length || 0;
+                const missingColumnsCount = validationReport?.errors.filter(e => e.description.toLowerCase().includes('column') && e.description.toLowerCase().includes('does not exist')).length || 0;
+                const compilationErrorsCount = validationReport?.errors.length || 0;
+                const warningsCount = validationReport?.warnings.length || 0;
+
+                return (
+                  <div className="glass-panel" style={{ padding: '1.25rem', marginBottom: '1.5rem', border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: 'var(--radius-md)' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
+                      <div>
+                        <h4 style={{ margin: '0 0 0.75rem 0', fontSize: '0.95rem', color: '#60a5fa', fontWeight: '700', borderBottom: '1px solid rgba(255, 255, 255, 0.1)', paddingBottom: '0.4rem' }}>
+                          Database Objects Parsed
+                        </h4>
+                        <table style={{ width: '100%', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                          <tbody>
+                            <tr>
+                              <td style={{ padding: '0.3rem 0' }}>Schemas Parsed</td>
+                              <td style={{ textAlign: 'right', fontWeight: 'bold', color: 'var(--text-primary)' }}>{schemasParsedCount}</td>
+                            </tr>
+                            <tr>
+                              <td style={{ padding: '0.3rem 0' }}>Schemas Created</td>
+                              <td style={{ textAlign: 'right', fontWeight: 'bold', color: 'var(--text-primary)' }}>{schemasCreatedCount}</td>
+                            </tr>
+                            <tr>
+                              <td style={{ padding: '0.3rem 0' }}>Tables Count</td>
+                              <td style={{ textAlign: 'right', fontWeight: 'bold', color: 'var(--text-primary)' }}>{tablesCount}</td>
+                            </tr>
+                            <tr>
+                              <td style={{ padding: '0.3rem 0' }}>Views Count</td>
+                              <td style={{ textAlign: 'right', fontWeight: 'bold', color: 'var(--text-primary)' }}>{viewsCount}</td>
+                            </tr>
+                            <tr>
+                              <td style={{ padding: '0.3rem 0' }}>Functions Count</td>
+                              <td style={{ textAlign: 'right', fontWeight: 'bold', color: 'var(--text-primary)' }}>{functionsCount}</td>
+                            </tr>
+                            <tr>
+                              <td style={{ padding: '0.3rem 0' }}>Procedures Count</td>
+                              <td style={{ textAlign: 'right', fontWeight: 'bold', color: 'var(--text-primary)' }}>{proceduresCount}</td>
+                            </tr>
+                            <tr>
+                              <td style={{ padding: '0.3rem 0' }}>Triggers Count</td>
+                              <td style={{ textAlign: 'right', fontWeight: 'bold', color: 'var(--text-primary)' }}>{triggersCount}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                      
+                      <div>
+                        <h4 style={{ margin: '0 0 0.75rem 0', fontSize: '0.95rem', color: '#60a5fa', fontWeight: '700', borderBottom: '1px solid rgba(255, 255, 255, 0.1)', paddingBottom: '0.4rem' }}>
+                          Validation & Integrity Status
+                        </h4>
+                        <table style={{ width: '100%', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                          <tbody>
+                            <tr>
+                              <td style={{ padding: '0.3rem 0' }}>Schema References Fixed</td>
+                              <td style={{ textAlign: 'right', fontWeight: 'bold', color: 'var(--text-primary)' }}>{schemaRefFixedCount}</td>
+                            </tr>
+                            <tr>
+                              <td style={{ padding: '0.3rem 0' }}>Dependencies Resolved</td>
+                              <td style={{ textAlign: 'right', fontWeight: 'bold', color: depsResolvedPct === 100 ? 'var(--success)' : 'var(--warning)' }}>
+                                {depsResolvedPct}%
+                              </td>
+                            </tr>
+                            <tr>
+                              <td style={{ padding: '0.3rem 0' }}>Missing Tables Detected</td>
+                              <td style={{ textAlign: 'right', fontWeight: 'bold', color: missingTablesCount > 0 ? 'var(--error)' : 'var(--text-primary)' }}>{missingTablesCount}</td>
+                            </tr>
+                            <tr>
+                              <td style={{ padding: '0.3rem 0' }}>Missing Columns Detected</td>
+                              <td style={{ textAlign: 'right', fontWeight: 'bold', color: missingColumnsCount > 0 ? 'var(--error)' : 'var(--text-primary)' }}>{missingColumnsCount}</td>
+                            </tr>
+                            <tr>
+                              <td style={{ padding: '0.3rem 0' }}>Compilation Errors</td>
+                              <td style={{ textAlign: 'right', fontWeight: 'bold', color: compilationErrorsCount > 0 ? 'var(--error)' : 'var(--text-primary)' }}>{compilationErrorsCount}</td>
+                            </tr>
+                            <tr>
+                              <td style={{ padding: '0.3rem 0' }}>Warnings Flaged</td>
+                              <td style={{ textAlign: 'right', fontWeight: 'bold', color: warningsCount > 0 ? 'var(--warning)' : 'var(--text-primary)' }}>{warningsCount}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
               
               <div className="validation-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
                 <div className="validation-card glass-panel" style={{ padding: '1rem', borderLeft: '4px solid var(--success)', borderRadius: 'var(--radius-sm)' }}>
