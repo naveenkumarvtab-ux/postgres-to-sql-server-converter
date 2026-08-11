@@ -750,5 +750,290 @@ body.light-theme .summary-nav-header h2 {
   transform: translateX(24px);
 }
 
+/* Export Centre Styles */
+.export-centre {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  margin-top: 2rem;
+  animation: fadeIn 0.4s ease-out;
+}
 
+.export-centre-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
 
+@media (max-width: 900px) {
+  .export-centre-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.export-centre-section {
+  padding: 1.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.export-centre-section h3 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 0.25rem;
+}
+
+.section-desc {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin-bottom: 0.5rem;
+}
+
+.export-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.export-actions .btn {
+  justify-content: center;
+}
+
+/* SQL Server Deployment Styles */
+.connection-prompt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 2.5rem 1rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px dashed var(--panel-border);
+  border-radius: var(--radius-md);
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.deploy-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.connection-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--success-bg);
+  border: 1px solid var(--success-border);
+  color: var(--success);
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.connection-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.connection-dot.connected {
+  background: var(--success);
+  box-shadow: 0 0 8px var(--success);
+}
+
+.connection-dot.disconnected {
+  background: var(--error);
+  box-shadow: 0 0 8px var(--error);
+}
+
+.deploy-btn {
+  padding: 1rem;
+  font-size: 1.05rem;
+}
+
+.deploy-warning {
+  color: var(--error);
+  font-size: 0.85rem;
+  text-align: center;
+  font-weight: 600;
+}
+
+.deploy-progress-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1.5rem;
+  background: rgba(15, 23, 42, 0.3);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md);
+}
+
+.phase-indicator {
+  display: flex;
+  justify-content: space-between;
+  position: relative;
+  margin-bottom: 1rem;
+}
+
+.phase-indicator::before {
+  content: '';
+  position: absolute;
+  top: 12px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--panel-border);
+  z-index: 0;
+}
+
+.phase-step {
+  position: relative;
+  z-index: 1;
+  background: var(--panel-bg);
+  padding: 0.25rem 0.75rem;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  border: 2px solid var(--panel-border);
+  transition: all 0.3s ease;
+}
+
+.phase-step.active {
+  color: var(--primary);
+  border-color: var(--primary);
+  box-shadow: 0 0 10px var(--primary-glow);
+}
+
+.phase-step.completed {
+  color: var(--success);
+  border-color: var(--success);
+  background: var(--success-bg);
+}
+
+.deploy-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.progress-text {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  justify-content: space-between;
+}
+
+.progress-bar {
+  height: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--primary), var(--secondary));
+  transition: width 0.3s ease-out;
+}
+
+.deploy-log {
+  max-height: 200px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  border: 1px inset rgba(255, 255, 255, 0.05);
+}
+
+.deploy-log-entry {
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.deploy-log-entry.info { color: var(--text-secondary); }
+.deploy-log-entry.success { color: var(--success); background: var(--success-bg); }
+.deploy-log-entry.error { color: var(--error); background: var(--error-bg); }
+
+.deploy-success-actions {
+  display: flex;
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+
+.deploy-success-actions .btn {
+  flex: 1;
+}
+
+/* Status Badges */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.status-badge.passed { background: var(--success-bg); color: var(--success); border: 1px solid var(--success-border); }
+.status-badge.failed { background: var(--error-bg); color: var(--error); border: 1px solid var(--error-border); }
+.status-badge.pending { background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning-border); }
+
+/* Object Counts Table */
+.object-counts-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  margin-top: 1rem;
+}
+
+.object-counts-table th, .object-counts-table td {
+  padding: 0.5rem;
+  text-align: left;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.object-counts-table th {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.object-counts-table td {
+  color: var(--text-primary);
+}
+
+/* Hard Rule Banner */
+.hard-rule-banner {
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+  color: var(--error);
+  padding: 1.25rem 1.5rem;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+/* Connection Status */
+.connection-status {
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}

@@ -1,6 +1,19 @@
 import React, { useState } from 'react';
 import { supabase } from '../utils/supabaseClient';
 import { validatePassword } from '../utils/passwordValidator';
+import SqlServerConfig from './SqlServerConfig';
+
+const defaultSqlServerConfig = {
+  server: 'localhost',
+  authMode: 'windows',
+  username: '',
+  password: '',
+  dbPrefix: 'Migration',
+  backupDir: 'C:\\MigrationToSQL\\exports',
+  targetProfile: 'sql2022',
+  isConnected: false,
+  serverInfo: null
+};
 
 export default function SettingsPanel({ isOpen, onClose, settings, onUpdateSettings, user }) {
   if (!isOpen) return null;
@@ -198,6 +211,15 @@ export default function SettingsPanel({ isOpen, onClose, settings, onUpdateSetti
             </div>
           </div>
 
+          <div className="setting-section">
+            <h3>SQL Server Connection</h3>
+            <p className="setting-desc">Configure the connection to deploy and generate .BAK files directly.</p>
+            <SqlServerConfig 
+              config={settings.sqlServerConfig || defaultSqlServerConfig} 
+              onUpdateConfig={(newConfig) => onUpdateSettings({ sqlServerConfig: newConfig })} 
+            />
+          </div>
+
           {user && (
             <div className="setting-section" style={{ borderTop: '1px solid var(--panel-border)', paddingTop: '1.25rem' }}>
               <h3>Change Password</h3>
@@ -320,7 +342,7 @@ export default function SettingsPanel({ isOpen, onClose, settings, onUpdateSetti
           border-right: none;
           display: flex;
           flex-direction: column;
-          background: #090e1a;
+          background: var(--panel-bg-opaque, #090e1a);
           box-shadow: -10px 0 30px rgba(0,0,0,0.5);
           animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1);
         }
@@ -336,7 +358,7 @@ export default function SettingsPanel({ isOpen, onClose, settings, onUpdateSetti
         .settings-header h2 {
           font-size: 1.25rem;
           font-weight: 700;
-          color: #fff;
+          color: var(--text-primary, #fff);
         }
         
         .btn-close {
@@ -349,7 +371,7 @@ export default function SettingsPanel({ isOpen, onClose, settings, onUpdateSetti
         }
         
         .btn-close:hover {
-          color: #fff;
+          color: var(--text-primary, #fff);
         }
         
         .settings-content {
@@ -370,8 +392,8 @@ export default function SettingsPanel({ isOpen, onClose, settings, onUpdateSetti
         .setting-section h3 {
           font-size: 1rem;
           font-weight: 700;
-          color: #fff;
-          border-bottom: 1px solid rgba(255,255,255,0.05);
+          color: var(--text-primary, #fff);
+          border-bottom: 1px solid var(--panel-border);
           padding-bottom: 0.4rem;
         }
         
@@ -458,7 +480,7 @@ export default function SettingsPanel({ isOpen, onClose, settings, onUpdateSetti
         
         .checkbox-label strong {
           font-size: 0.9rem;
-          color: #fff;
+          color: var(--text-primary, #fff);
         }
         
         .checkbox-desc {
@@ -485,7 +507,7 @@ export default function SettingsPanel({ isOpen, onClose, settings, onUpdateSetti
         .info-alert-text h4 {
           font-size: 0.85rem;
           font-weight: 700;
-          color: #fff;
+          color: var(--text-primary, #fff);
           margin-bottom: 0.25rem;
         }
         

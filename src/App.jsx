@@ -162,7 +162,18 @@ export default function App() {
       useUnicode: true,
       model: 'gemini-3.1-flash-lite',
       deploymentMode: 'migration',
-      sqlServerVersion: '2017+'
+      sqlServerVersion: '2017+',
+      sqlServerConfig: {
+        server: 'localhost',
+        authMode: 'windows',
+        username: '',
+        password: '',
+        dbPrefix: 'Migration',
+        backupDir: 'C:\\MigrationToSQL\\exports',
+        targetProfile: 'sql2022',
+        isConnected: false,
+        serverInfo: null
+      }
     };
   });
 
@@ -674,6 +685,8 @@ export default function App() {
             sourceDialect={sourceDialect}
             originalFileName={originalFileName}
             preserveSchema={settings.preserveSchema}
+            settings={settings}
+            onOpenSettings={() => setIsSettingsOpen(true)}
           />
         )}
       </div>

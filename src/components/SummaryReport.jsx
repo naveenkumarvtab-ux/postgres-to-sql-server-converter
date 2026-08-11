@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import JSZip from 'jszip';
+import ExportCentre from './ExportCentre';
 
 function sortTopologically(list, allObjects) {
   const result = [];
@@ -40,7 +41,7 @@ function sortTopologically(list, allObjects) {
   return result;
 }
 
-export default function SummaryReport({ objects, validationReport, onReset, onBackToWorkspace, sourceDialect, originalFileName, preserveSchema }) {
+export default function SummaryReport({ objects, validationReport, onReset, onBackToWorkspace, sourceDialect, originalFileName, preserveSchema, settings, onOpenSettings }) {
   const [activeTab, setActiveTab] = useState('metrics');
   const [allowExportAnyway, setAllowExportAnyway] = useState(false);
   const [downloadFormat, setDownloadFormat] = useState(() => {
@@ -765,6 +766,16 @@ _Note: Double check all functions and trigger behaviors before deploying to prod
           )}
         </div>
       </div>
+
+      <ExportCentre 
+        objects={objects} 
+        validationReport={validationReport}
+        settings={settings}
+        sourceDialect={sourceDialect}
+        originalFileName={originalFileName}
+        preserveSchema={preserveSchema}
+        onOpenSettings={onOpenSettings}
+      />
 
       <style>{`
         .summary-container {

@@ -1,0 +1,19 @@
+{
+  "name": "migration-backend",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "description": "Backend server for SQL Server .BAK generation",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.0",
+    "mssql": "^11.0.1",
+    "msnodesqlv8": "^4.2.1",
+    "uuid": "^11.0.3"
+  }
+}
