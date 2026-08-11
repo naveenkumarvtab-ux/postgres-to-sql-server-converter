@@ -39,6 +39,11 @@ function sortTopologically(list, allObjects) {
   return result;
 }
 
+const getApiUrl = (path) => {
+  const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  return isLocalDev ? path : `http://127.0.0.1:3001${path}`;
+};
+
 export default function ExportCentre({ 
   objects, 
   validationReport, 
@@ -314,7 +319,7 @@ ${reportData.warningsList.length === 0 ? '_No logical compiler warnings flagged.
     
     try {
       // 1. Deploy Objects via SSE
-      const deployRes = await fetch('/api/deploy/start', {
+      const deployRes = await fetch(getApiUrl('/api/deploy/start'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -379,7 +384,7 @@ ${reportData.warningsList.length === 0 ? '_No logical compiler warnings flagged.
                 setDeployResults(evt.data.deployResult);
                 
                 // 2. Start Backup via SSE
-                const backupRes = await fetch('/api/backup/generate', {
+                const backupRes = await fetch(getApiUrl('/api/backup/generate'), {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ sessionId: activeSessionId, bypassErrors })
@@ -543,7 +548,7 @@ ${reportData.warningsList.length === 0 ? '_No logical compiler warnings flagged.
                   {deployPhase === 'completed' && (
                     <div className="deploy-success-actions">
                       {backupSessionId && (
-                        <a href={`/api/backup/download/${backupSessionId}`} className="btn btn-primary" download>
+                        <a href={getApiUrl(`/api/backup/download/${backupSessionId}`)} className="btn btn-primary" download>
                           Download .BAK
                         </a>
                       )}

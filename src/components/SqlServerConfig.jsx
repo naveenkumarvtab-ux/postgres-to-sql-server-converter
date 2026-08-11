@@ -8,11 +8,16 @@ export default function SqlServerConfig({ config, onUpdateConfig }) {
     onUpdateConfig({ ...config, [field]: value });
   };
 
+  const getApiUrl = (path) => {
+    const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    return isLocalDev ? path : `http://127.0.0.1:3001${path}`;
+  };
+
   const handleTestConnection = async () => {
     setIsTesting(true);
     setTestResult(null);
     try {
-      const response = await fetch('/api/connection/test', {
+      const response = await fetch(getApiUrl('/api/connection/test'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
