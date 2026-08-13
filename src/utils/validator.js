@@ -1,10 +1,11 @@
 import { cleanIdentifier } from './parser.js';
+import { RESERVED_KEYWORDS, extractLocalScopeNames, resolveDeclaredSchema } from './validationHelpers.js';
 
 /**
  * Advanced Validation Engine for PostgreSQL to SQL Server T-SQL migration.
  * Validates syntax, references, dependencies, schema consistency, data types, and compatibility.
  */
-export function validateMigration(translatedObjects) {
+export function validateMigration(translatedObjects, sourceDialect = 'postgres') {
   const report = {
     successes: [],
     warnings: [],
@@ -19,7 +20,7 @@ export function validateMigration(translatedObjects) {
   const declaredFunctions = new Set();
   const declaredProcedures = new Set();
   const declaredSeqs = new Set();
-  const declaredSchemas = new Set(['dbo', 'public']);
+  const declaredSchemas = new Set(['dbo', 'public', 'sys', 'information_schema']);
   const tableColumns = {};
   
   for (const obj of translatedObjects) {
@@ -217,6 +218,9 @@ export function validateMigration(translatedObjects) {
     // 3. Object Reference & Schema checks
     // Check Schemas, Tables, Columns, Sequences, Views, Functions, Procedures
     
+    // Parse local variables, parameters, CTEs, and aliases within this object
+    const localScopeNames = extractLocalScopeNames(cleanTsql);
+
     // Find all two-part or three-part references like [schema].[table] or schema.table
     const refPattern = /\b([a-zA-Z0-9_]+)\s*\.\s*([a-zA-Z0-9_]+)\b/g;
     let schemaMatch;
@@ -226,6 +230,11 @@ export function validateMigration(translatedObjects) {
       
       // Skip system schemas, keywords, and known built-ins
       if (['sys', 'information_schema', 'dbo', 'inserted', 'deleted'].includes(schemaName)) {
+        continue;
+      }
+
+      // Skip if schemaName is a local variable or parameter
+      if (localScopeNames.has(schemaName)) {
         continue;
       }
       
@@ -268,103 +277,110 @@ export function validateMigration(translatedObjects) {
       }
     }
 
-    // Match FROM / JOIN / UPDATE / INTO table references
-    const refRegex = /\b(?:FROM|JOIN|UPDATE|INTO|REFERENCES)\s+([a-zA-Z0-9_.[\]]+)/gi;
-    let match;
-    const referencedTablesInQuery = [];
-    while ((match = refRegex.exec(cleanTsql)) !== null) {
-      const fullRef = match[1].replace(/[\[\]]/g, '').trim();
-      
-      if (['inserted', 'deleted', 'sys', 'information_schema', 'select', 'values', 'as', 'begin', 'set', 'declare'].includes(fullRef.toLowerCase())) {
-        continue;
-      }
-
-      const parts = fullRef.split('.');
-      let refSchema = '';
-      let refName = '';
-      if (parts.length > 1) {
-        refSchema = parts[0].toLowerCase();
-        refName = parts[1].toLowerCase();
-      } else {
-        refSchema = 'dbo';
-        refName = parts[0].toLowerCase();
-      }
-
-      const refKey = `${refSchema}.${refName}`;
-      referencedTablesInQuery.push({ key: refKey, name: refName, full: fullRef });
-
-      // Validate references to actual tables/views
-      if (!declaredTables.has(refKey) && !declaredViews.has(refKey) && !refName.startsWith('#')) {
-        report.errors.push({
-          objectName: objLabel,
-          description: `Broken Dependency / Missing Table or View: Referenced table or view '${fullRef}' does not exist in the active migration.`
-        });
-        hasCriticalError = true;
-      }
-    }
-
-    // Check referenced Columns inside query
-    const tokens = cleanTsql.match(/\b[a-zA-Z_][a-zA-Z0-9_]*\b/g) || [];
-    const uniqueTokens = [...new Set(tokens)];
-    
-    uniqueTokens.forEach(token => {
-      const lowerToken = token.toLowerCase();
-      // Skip keywords and built-in function names
-      if (['select', 'from', 'where', 'and', 'or', 'join', 'on', 'group', 'by', 'order', 'having', 'insert', 'into', 'values', 'update', 'set', 'delete', 'dbo', 'public', 'count', 'sum', 'avg', 'min', 'max', 'null', 'not', 'in', 'is', 'as', 'create', 'view', 'procedure', 'function', 'trigger', 'end', 'begin', 'return', 'returns', 'declare', 'if', 'else', 'case', 'when', 'then', 'coalesce', 'isnull', 'cast', 'convert', 'go'].includes(lowerToken)) {
-        return;
-      }
-      
-      if (declaredFunctions.has(lowerToken) || declaredProcedures.has(lowerToken)) {
-        return;
-      }
-
-      let foundInAnyTable = false;
-      let checkedTablesCount = 0;
-      
-      referencedTablesInQuery.forEach(tbl => {
-        const cols = tableColumns[tbl.key];
-        if (cols) {
-          checkedTablesCount++;
-          if (cols.includes(lowerToken)) {
-            foundInAnyTable = true;
-          }
+    // Match FROM / JOIN / UPDATE / INTO table references (only for queries/procedural objects, not tables/sequences/schemas)
+    if (obj.type !== 'TABLE' && obj.type !== 'SEQUENCE' && obj.type !== 'SCHEMA') {
+      const refRegex = /\b(?:FROM|JOIN|UPDATE|INTO|REFERENCES)\s+([a-zA-Z0-9_.[\]]+)/gi;
+      let match;
+      const referencedTablesInQuery = [];
+      while ((match = refRegex.exec(cleanTsql)) !== null) {
+        const fullRef = match[1].replace(/[\[\]]/g, '').trim();
+        const lowerRef = fullRef.toLowerCase();
+        
+        if (RESERVED_KEYWORDS.has(lowerRef) || localScopeNames.has(lowerRef)) {
+          continue;
         }
-      });
 
-      if (checkedTablesCount > 0 && !foundInAnyTable) {
-        const isTableName = referencedTablesInQuery.some(t => t.name === lowerToken);
-        if (!isTableName) {
-          // Find closest column suggestion
-          let suggestion = null;
-          referencedTablesInQuery.forEach(tbl => {
-            const cols = tableColumns[tbl.key];
-            if (cols && !suggestion) {
-              suggestion = findClosestColumn(token, cols);
-            }
-          });
+        if (lowerRef.startsWith('sys.') || lowerRef.startsWith('information_schema.')) {
+          continue;
+        }
 
+        const resolved = resolveDeclaredSchema(fullRef, declaredSchemas, obj.schema || 'dbo');
+        const refSchema = resolved.schema;
+        const refName = resolved.name;
+        const refKey = resolved.key;
+
+        referencedTablesInQuery.push({ key: refKey, name: refName, full: fullRef });
+
+        // Validate references to actual tables/views
+        if (!declaredTables.has(refKey) && !declaredViews.has(refKey) && !refName.startsWith('#')) {
           report.errors.push({
             objectName: objLabel,
-            description: `Missing Column Error: Referenced column '${token}' does not exist in Table/View.${suggestion ? ` Did you mean '${suggestion}'?` : ''}`
+            description: `Broken Dependency / Missing Table or View: Referenced table or view '${fullRef}' does not exist in the active migration.`
           });
           hasCriticalError = true;
         }
       }
-    });
+
+      // Check referenced Columns inside query
+      const sqlForColumns = cleanTsql.replace(/'(?:''|[^'])*'/g, "''");
+      const tokens = sqlForColumns.match(/\b[a-zA-Z_][a-zA-Z0-9_]*\b/g) || [];
+      const uniqueTokens = [...new Set(tokens)];
+      
+      uniqueTokens.forEach(token => {
+        const lowerToken = token.toLowerCase();
+        // Skip keywords, functions, variables and local scoped names
+        if (RESERVED_KEYWORDS.has(lowerToken) || localScopeNames.has(lowerToken)) {
+          return;
+        }
+        
+        // Skip current object name, declared schemas, tables, views, sequences, functions, procedures
+        if (
+          lowerToken === obj.name.toLowerCase() ||
+          declaredSchemas.has(lowerToken) ||
+          declaredTables.has(lowerToken) ||
+          declaredViews.has(lowerToken) ||
+          declaredSeqs.has(lowerToken) ||
+          declaredFunctions.has(lowerToken) ||
+          declaredProcedures.has(lowerToken) ||
+          [...declaredTables].some(k => k.endsWith('.' + lowerToken)) ||
+          [...declaredViews].some(k => k.endsWith('.' + lowerToken))
+        ) {
+          return;
+        }
+
+        let foundInAnyTable = false;
+        let checkedTablesCount = 0;
+        
+        referencedTablesInQuery.forEach(tbl => {
+          const cols = tableColumns[tbl.key];
+          if (cols) {
+            checkedTablesCount++;
+            if (cols.includes(lowerToken)) {
+              foundInAnyTable = true;
+            }
+          }
+        });
+
+        if (checkedTablesCount > 0 && !foundInAnyTable) {
+          const isTableName = referencedTablesInQuery.some(t => t.name === lowerToken);
+          if (!isTableName) {
+            // Find closest column suggestion
+            let suggestion = null;
+            referencedTablesInQuery.forEach(tbl => {
+              const cols = tableColumns[tbl.key];
+              if (cols && !suggestion) {
+                suggestion = findClosestColumn(token, cols);
+              }
+            });
+
+            report.errors.push({
+              objectName: objLabel,
+              description: `Missing Column Error: Referenced column '${token}' does not exist in Table/View.${suggestion ? ` Did you mean '${suggestion}'?` : ''}`
+            });
+            hasCriticalError = true;
+          }
+        }
+      });
+    }
 
     // Validate sequence references
     const seqRefRegex = /NEXT\s+VALUE\s+FOR\s+([a-zA-Z0-9_.[\]]+)/gi;
     let seqMatch;
     while ((seqMatch = seqRefRegex.exec(cleanTsql)) !== null) {
       const fullSeq = seqMatch[1].replace(/[\[\]]/g, '').trim();
-      const parts = fullSeq.split('.');
-      let seqSchema = 'dbo';
-      let seqName = fullSeq.toLowerCase();
-      if (parts.length > 1) {
-        seqSchema = parts[0].toLowerCase();
-        seqName = parts[1].toLowerCase();
-      }
-      const seqKey = `${seqSchema}.${seqName}`;
+      const resolvedSeq = resolveDeclaredSchema(fullSeq, declaredSchemas, obj.schema || 'dbo');
+      const seqKey = resolvedSeq.key;
+
       if (!declaredSeqs.has(seqKey)) {
         report.errors.push({
           objectName: objLabel,
@@ -382,14 +398,9 @@ export function validateMigration(translatedObjects) {
           const refMatch = c.match(/REFERENCES\s+([^\s(]+)/i);
           if (refMatch) {
             const refTable = refMatch[1].replace(/[\[\]]/g, '').trim();
-            const parts = refTable.split('.');
-            let refSchema = 'dbo';
-            let refName = refTable.toLowerCase();
-            if (parts.length > 1) {
-              refSchema = parts[0].toLowerCase();
-              refName = parts[1].toLowerCase();
-            }
-            const refKey = `${refSchema}.${refName}`;
+            const resolvedRefTable = resolveDeclaredSchema(refTable, declaredSchemas, obj.schema || 'dbo');
+            const refKey = resolvedRefTable.key;
+
             if (!declaredTables.has(refKey)) {
               report.errors.push({
                 objectName: objLabel,
@@ -439,9 +450,10 @@ export function validateMigration(translatedObjects) {
     if (hasCriticalError) {
       // already added to errors list
     } else if (obj.requiresAi) {
+      const dialectLabel = sourceDialect === 'oracle' ? 'Oracle PL/SQL' : sourceDialect === 'mysql' ? 'MySQL' : 'PL/pgSQL';
       report.manualFixes.push({
         objectName: objLabel,
-        description: `This PL/pgSQL object requires AI translation prior to deployment.`
+        description: `This ${dialectLabel} object requires AI translation prior to deployment.`
       });
     } else {
       report.successes.push({

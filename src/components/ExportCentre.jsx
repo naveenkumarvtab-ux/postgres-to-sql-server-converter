@@ -1,18 +1,25 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import JSZip from 'jszip';
 
-function sortTopologically(list, allObjects) {
+function sortTopologically(list, allObjects, circularWarnings = null) {
   const result = [];
   const visited = new Set();
   const visiting = new Set();
 
   function visit(obj) {
+    if (!obj?.classified?.id) return;
     if (visited.has(obj.classified.id)) return;
-    if (visiting.has(obj.classified.id)) return;
+    if (visiting.has(obj.classified.id)) {
+      if (circularWarnings) {
+        circularWarnings.push(`Circular dependency detected: Object '${obj.classified.name}' is part of a dependency loop.`);
+      }
+      return;
+    }
     visiting.add(obj.classified.id);
 
     const rawTextLower = (obj.translation.tsql || obj.classified.raw || '').toLowerCase();
     allObjects.forEach(other => {
+      if (!other?.classified?.id) return;
       if (other.classified.id === obj.classified.id) return;
       const otherName = other.classified.name.toLowerCase();
       const escapedName = otherName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -25,14 +32,14 @@ function sortTopologically(list, allObjects) {
 
     visiting.delete(obj.classified.id);
     visited.add(obj.classified.id);
-    if (list.some(o => o.classified.id === obj.classified.id)) {
+    if (list.some(o => o.classified?.id === obj.classified.id)) {
       result.push(obj);
     }
   }
 
   list.forEach(obj => visit(obj));
   list.forEach(obj => {
-    if (!result.some(r => r.classified.id === obj.classified.id)) {
+    if (obj?.classified?.id && !result.some(r => r.classified?.id === obj.classified.id)) {
       result.push(obj);
     }
   });
@@ -58,9 +65,11 @@ export default function ExportCentre({
   const [deployTotal, setDeployTotal] = useState(0);
   const [deployLogs, setDeployLogs] = useState([]);
   const [deployResults, setDeployResults] = useState(null);
+  const [compileResults, setCompileResults] = useState(null);
   const [backupSessionId, setBackupSessionId] = useState(null);
   const [bypassErrors, setBypassErrors] = useState(false);
-  
+  const [activeDrillDown, setActiveDrillDown] = useState(null);
+
   const pendingAiCount = useMemo(() => objects.filter(o => o.translation.requiresAi).length, [objects]);
   const errorCount = validationReport?.errors?.length || 0;
   
@@ -68,6 +77,202 @@ export default function ExportCentre({
   const isConnected = sqlConfig.isConnected;
 
   const categoryOrder = ['SCHEMA', 'EXTENSION', 'ENUM', 'DOMAIN', 'COMPOSITE', 'SEQUENCE', 'TABLE', 'CONSTRAINT', 'INDEX', 'VIEW', 'FUNCTION', 'PROCEDURE', 'TRIGGER', 'DATA', 'OTHER'];
+
+  const getObjectStatusAndError = (obj) => {
+    const name = obj.classified.name;
+    const schema = obj.classified.schema || 'dbo';
+    const type = obj.classified.type;
+    const fullName = `${schema}.${name}`.toLowerCase();
+
+    if (deployResults?.errors) {
+      const deployErr = deployResults.errors.find(
+        e => e.object?.toLowerCase() === fullName || e.object?.toLowerCase() === name.toLowerCase()
+      );
+      if (deployErr) {
+        return { status: 'Failed', error: deployErr.error };
+      }
+    }
+
+    if (compileResults?.compilationErrors) {
+      const compileErr = compileResults.compilationErrors.find(
+        e => e.object?.toLowerCase() === fullName || e.object?.toLowerCase() === name.toLowerCase()
+      );
+      if (compileErr) {
+        return { status: 'Failed', error: compileErr.error };
+      }
+    }
+
+    if (compileResults?.unresolvedDependencies) {
+      const depErr = compileResults.unresolvedDependencies.find(
+        e => e.object?.toLowerCase() === fullName || e.object?.toLowerCase() === name.toLowerCase()
+      );
+      if (depErr) {
+        return { status: 'Failed', error: `Unresolved dependency: ${depErr.dependency}` };
+      }
+    }
+
+    if (compileResults?.deployedObjects) {
+      const categoryMap = {
+        SCHEMA: 'schemas',
+        TABLE: 'tables',
+        VIEW: 'views',
+        PROCEDURE: 'procedures',
+        FUNCTION: 'functions',
+        TRIGGER: 'triggers',
+        CONSTRAINT: 'constraints',
+        INDEX: 'indexes'
+      };
+      const listKey = categoryMap[type];
+      if (listKey) {
+        const foundList = compileResults.deployedObjects[listKey];
+        if (foundList) {
+          const isCreated = foundList.some(n => {
+            if (!n) return false;
+            const nName = typeof n === 'string' ? n : (n.name || '');
+            const nSchema = typeof n === 'string' ? 'dbo' : (n.schema || 'dbo');
+            
+            if (typeof n === 'string' && n.includes('.')) {
+              const parts = n.split('.');
+              return parts[1].toLowerCase() === name.toLowerCase() && parts[0].toLowerCase() === schema.toLowerCase();
+            }
+            
+            if (type === 'SCHEMA') {
+              return nName.toLowerCase() === name.toLowerCase();
+            }
+            
+            return nName.toLowerCase() === name.toLowerCase() && nSchema.toLowerCase() === schema.toLowerCase();
+          });
+          if (isCreated) {
+            return { status: 'Verified', error: null };
+          }
+        }
+      } else {
+        if (deployResults?.successes) {
+          const isDeplSuccess = deployResults.successes.some(
+            s => s.name?.toLowerCase() === name.toLowerCase() && (s.schema || 'dbo').toLowerCase() === schema.toLowerCase()
+          );
+          if (isDeplSuccess) {
+            return { status: 'Verified', error: null };
+          }
+        }
+      }
+    } else {
+      if (deployResults?.successes) {
+        const isDeplSuccess = deployResults.successes.some(
+          s => s.name?.toLowerCase() === name.toLowerCase() && (s.schema || 'dbo').toLowerCase() === schema.toLowerCase()
+        );
+        if (isDeplSuccess) {
+          return { status: 'Verified', error: null };
+        }
+      }
+    }
+
+    if (obj.translation.requiresAi && !settings.apiKey) {
+      return { status: 'Skipped', error: 'Skipped: Requires AI key for translation' };
+    }
+    return { status: 'Skipped', error: 'Skipped or bypassed during deployment' };
+  };
+
+  const breakdownCategories = [
+    { label: 'Schemas', type: 'SCHEMA' },
+    { label: 'Tables', type: 'TABLE' },
+    { label: 'Views', type: 'VIEW' },
+    { label: 'Stored Procedures', type: 'PROCEDURE' },
+    { label: 'Functions', type: 'FUNCTION' },
+    { label: 'Triggers', type: 'TRIGGER' },
+    { label: 'Constraints & Keys', type: 'CONSTRAINT' },
+    { label: 'Indexes', type: 'INDEX' },
+    { label: 'Sequences & Custom Types', type: 'SEQUENCE' }
+  ];
+
+  const categoryStats = useMemo(() => {
+    return breakdownCategories.map(cat => {
+      let catObjects = [];
+      if (cat.type === 'SEQUENCE') {
+        catObjects = objects.filter(o => ['SEQUENCE', 'ENUM', 'DOMAIN', 'COMPOSITE'].includes(o.classified.type));
+      } else {
+        catObjects = objects.filter(o => o.classified.type === cat.type);
+      }
+
+      let migrated = 0;
+      let failed = 0;
+      let skipped = 0;
+      const items = catObjects.map(obj => {
+        const { status, error } = getObjectStatusAndError(obj);
+        if (status === 'Verified') migrated++;
+        else if (status === 'Failed') failed++;
+        else skipped++;
+        return {
+          id: obj.classified.id || `${obj.classified.schema}.${obj.classified.name}`,
+          schema: obj.classified.schema || 'dbo',
+          name: obj.classified.name,
+          status,
+          error
+        };
+      });
+
+      const totalCount = catObjects.length;
+
+      let targetCount = 0;
+      if (compileResults) {
+        const typeMap = {
+          TABLE: 'tables',
+          VIEW: 'views',
+          PROCEDURE: 'procedures',
+          FUNCTION: 'functions',
+          TRIGGER: 'triggers',
+          CONSTRAINT: 'constraints',
+          INDEX: 'indexes'
+        };
+        const key = typeMap[cat.type];
+        if (key) {
+          targetCount = compileResults.objectCounts?.[key] || 0;
+        } else {
+          targetCount = migrated;
+        }
+      }
+
+      const missing = Math.max(0, totalCount - targetCount);
+      const extra = Math.max(0, targetCount - totalCount);
+      const successRate = totalCount > 0 ? Math.round((migrated / totalCount) * 100) : 100;
+
+      return {
+        ...cat,
+        sourceCount: totalCount,
+        targetCount,
+        migrated,
+        missing,
+        failed,
+        extra,
+        skipped,
+        successRate,
+        items
+      };
+    });
+  }, [objects, deployResults, compileResults]);
+
+  const totalStats = useMemo(() => {
+    let source = 0;
+    let migrated = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    categoryStats.forEach(cat => {
+      source += cat.sourceCount;
+      migrated += cat.migrated;
+      failed += cat.failed;
+      skipped += cat.skipped;
+    });
+
+    const rate = source > 0 ? Math.round((migrated / source) * 100) : 100;
+
+    return { source, migrated, failed, skipped, rate };
+  }, [categoryStats]);
+
+  const drillDownCat = useMemo(() => {
+    if (!activeDrillDown) return null;
+    return categoryStats.find(cat => cat.type === activeDrillDown);
+  }, [categoryStats, activeDrillDown]);
 
   const reportData = useMemo(() => {
     const stats = { total: objects.length, SCHEMA: 0, EXTENSION: 0, ENUM: 0, DOMAIN: 0, COMPOSITE: 0, SEQUENCE: 0, TABLE: 0, INDEX: 0, CONSTRAINT: 0, complex: 0, warnings: 0 };
@@ -127,13 +332,20 @@ export default function ExportCentre({
     };
 
     const sortedByType = {};
+    const circularWarnings = [];
     ['SCHEMA', 'EXTENSION', 'ENUM', 'DOMAIN', 'COMPOSITE', 'SEQUENCE', 'TABLE', 'CONSTRAINT', 'INDEX'].forEach(type => {
       const list = grouped[type];
-      if (list && list.length > 0) sortedByType[type] = sortTopologically(list, objects);
+      if (list && list.length > 0) sortedByType[type] = sortTopologically(list, objects, circularWarnings);
     });
 
     const routinesList = [...grouped['VIEW'], ...grouped['FUNCTION'], ...grouped['PROCEDURE'], ...grouped['TRIGGER']];
-    const sortedRoutines = routinesList.length > 0 ? sortTopologically(routinesList, objects) : [];
+    const sortedRoutines = routinesList.length > 0 ? sortTopologically(routinesList, objects, circularWarnings) : [];
+    
+    if (circularWarnings.length > 0) {
+      circularWarnings.forEach(w => {
+        warningsList.push({ type: 'CIRCULAR_DEPENDENCY', name: 'Routines Dependency Graph', text: w });
+      });
+    }
 
     const allDroppableCategories = ['INDEX', 'CONSTRAINT', 'TABLE', 'SEQUENCE'];
     const reverseDrops = [];
@@ -214,71 +426,264 @@ export default function ExportCentre({
 
   const downloadZipFile = async () => {
     const zip = new JSZip();
-    const folder = zip.folder("sql_server_migration");
-    const groupedByFile = {};
+    
+    // Group objects by their source file
+    const fileGroups = {};
+    objects.forEach(obj => {
+      const fileName = obj.classified.sourceFile || 'schema.sql';
+      if (!fileGroups[fileName]) {
+        fileGroups[fileName] = [];
+      }
+      fileGroups[fileName].push(obj);
+    });
+    
+    // For each file group, sort topologically and assemble T-SQL content
+    Object.keys(fileGroups).forEach(fileName => {
+      const fileObjects = fileGroups[fileName];
+      
+      const dataObjects = fileObjects.filter(o => o.classified.type === 'DATA');
+      const ddlObjects = fileObjects.filter(o => o.classified.type !== 'DATA');
+      const sortedDdl = sortTopologically(ddlObjects, objects);
+      const combinedObjects = [...sortedDdl, ...dataObjects];
+      
+      let tsqlContent = '';
+      combinedObjects.forEach(obj => {
+        if (obj.translation.tsql) {
+          tsqlContent += obj.translation.tsql + '\n\n';
+        }
+      });
+      
+      let targetFileName = fileName;
+      const lastDot = fileName.lastIndexOf('.');
+      if (lastDot !== -1) {
+        const ext = fileName.substring(lastDot);
+        const namePart = fileName.substring(0, lastDot);
+        targetFileName = `${namePart}_sql_server${ext}`;
+      } else {
+        targetFileName = `${fileName}_sql_server.sql`;
+      }
+      
+      zip.file(targetFileName, tsqlContent.trim());
+    });
+    
+    const mdReport = `# Database Schema Conversion Report
+Generated by TranspileDB on ${new Date().toLocaleDateString()}
+
+## Summary Metrics
+- **Total Objects Parsed**: ${objects.length}
+- **Dialect**: ${sourceDialect.toUpperCase()}
+
+*Detailed report generated inside individual files.*
+`;
+    zip.file('migration_report.md', mdReport);
+    
+    try {
+      const content = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(content);
+      const a = document.createElement('a');
+      a.href = url;
+      
+      let zipName = 'converted_sql_server_schema.zip';
+      if (originalFileName) {
+        const lastDot = originalFileName.lastIndexOf('.');
+        if (lastDot !== -1) {
+          const namePart = originalFileName.substring(0, lastDot);
+          zipName = `${namePart}_sql_server.zip`;
+        } else {
+          zipName = `${originalFileName}_sql_server.zip`;
+        }
+      }
+      a.download = zipName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Error generating zip:', err);
+    }
+  };
+
+  const generateMarkdownReport = () => {
+    const summary = reportData.stats;
+    const warningsList = reportData.warningsList;
+    const errorsList = validationReport?.errors || [];
+    const manualFixesList = validationReport?.manualFixes || [];
+
+    let details = '';
+
+    if (errorsList.length > 0) {
+      details += `### Syntax Errors (${errorsList.length})\n`;
+      errorsList.forEach(err => {
+        details += `- **[${err.type}] ${err.object}**: ${err.error}\n`;
+      });
+      details += '\n';
+    }
+
+    if (warningsList.length > 0) {
+      details += `### Compiler Warnings (${warningsList.length})\n`;
+      warningsList.forEach(w => {
+        details += `- **[${w.type}] ${w.name}**: ${w.text}\n`;
+      });
+      details += '\n';
+    }
+
+    if (manualFixesList.length > 0) {
+      details += `### Manual Adjustments Required (${manualFixesList.length})\n`;
+      manualFixesList.forEach(mf => {
+        details += `- **[${mf.type}] ${mf.object}**: ${mf.description}\n`;
+      });
+      details += '\n';
+    }
+
+    if (!details) {
+      details = 'No critical syntax errors, compiler warnings, or manual adjustments required.\n';
+    }
+
+    const triggerLogSection = generateTriggerLog();
+    const objectLogSection = generateDetailedObjectReport();
+
+    return `# SQL Server Migration Assessment Report
+Generated from: ${originalFileName}
+Dialect: ${sourceDialect.toUpperCase()}
+
+## Conversion Summary
+- Total Objects Parsed: ${summary.total}
+- Tables Converted: ${summary.TABLE}
+- Constraints Converted: ${summary.CONSTRAINT}
+- Sequences Converted: ${summary.SEQUENCE}
+- Programmable Objects (Views/Procedures/Functions/Triggers): ${summary.complex}
+- Translation Warnings Flagged: ${summary.warnings}
+
+## Post-Conversion Validation Summary
+- Syntax Errors: ${errorsList.length}
+- Warnings: ${warningsList.length}
+- Manual Checks Needed: ${manualFixesList.length}
+
+## Detailed Validation Findings
+${details}
+
+## Trigger Migration Log
+${triggerLogSection}
+
+## Detailed Object-Level Migration Log
+${objectLogSection}`;
+  };
+
+  const generateDetailedObjectReport = () => {
+    let log = "Object Type | Schema | Object Name | Source Status | Target Status | Migration Status | Error\n";
+    log += "---|---|---|---|---|---|---\n";
 
     objects.forEach(obj => {
-      const f = obj.classified.sourceFile || 'schema.sql';
-      if (!groupedByFile[f]) groupedByFile[f] = [];
-      groupedByFile[f].push(obj);
+      const type = obj.classified.type;
+      const schema = obj.classified.schema || 'dbo';
+      const name = obj.classified.name;
+      
+      const { status, error } = getObjectStatusAndError(obj);
+      
+      let sourceStatus = "FOUND";
+      let targetStatus = status === 'Verified' ? "FOUND" : "NOT_FOUND";
+      let migrationStatus = "FAILED";
+      
+      if (status === 'Verified') {
+        migrationStatus = "MIGRATED";
+      } else if (status === 'Skipped') {
+        migrationStatus = "MISSING";
+      } else if (status === 'Failed') {
+        migrationStatus = "FAILED";
+      }
+      
+      log += `${type} | ${schema} | ${name} | ${sourceStatus} | ${targetStatus} | ${migrationStatus} | ${error || 'N/A'}\n`;
     });
 
-    Object.keys(groupedByFile).forEach(fileName => {
-      const list = groupedByFile[fileName];
-      const dropList = [];
-      const createList = [];
-
-      list.forEach(obj => {
-        if (['VIEW', 'FUNCTION', 'PROCEDURE', 'TRIGGER'].includes(obj.classified.type)) {
-          dropList.push(`DROP ${obj.classified.type} IF EXISTS [${obj.classified.schema}].[${obj.classified.name}];\nGO`);
-        } else if (obj.classified.type === 'TABLE') {
-          dropList.push(`DROP TABLE IF EXISTS [${obj.classified.schema}].[${obj.classified.name}];\nGO`);
-        }
-        createList.push(obj.translation.tsql);
+    if (compileResults?.deployedObjects) {
+      const categoryMap = {
+        SCHEMA: 'schemas',
+        TABLE: 'tables',
+        VIEW: 'views',
+        PROCEDURE: 'procedures',
+        FUNCTION: 'functions',
+        TRIGGER: 'triggers',
+        CONSTRAINT: 'constraints',
+        INDEX: 'indexes'
+      };
+      
+      Object.keys(categoryMap).forEach(type => {
+        const listKey = categoryMap[type];
+        const foundList = compileResults.deployedObjects[listKey] || [];
+        foundList.forEach(targetObj => {
+          const tName = targetObj.name;
+          const tSchema = targetObj.schema || 'dbo';
+          
+          const existsInSource = objects.some(o => 
+            o.classified.type === type && 
+            o.classified.name.toLowerCase() === tName.toLowerCase() && 
+            (o.classified.schema || 'dbo').toLowerCase() === tSchema.toLowerCase()
+          );
+          
+          if (!existsInSource) {
+            log += `${type} | ${tSchema} | ${tName} | NOT_FOUND | FOUND | EXTRA | N/A\n`;
+          }
+        });
       });
+    }
 
-      const fileContent = `-- DROPS\n${dropList.join('\n')}\n\n-- CREATES\n${createList.join('\n\n')}`;
-      folder.file(fileName.replace(/\.[^/.]+$/, "") + '_sql_server.sql', fileContent);
-    });
+    return log;
+  };
 
-    const reportBlob = new Blob([generateMarkdownReport()], { type: 'text/markdown' });
-    folder.file("migration_report.md", reportBlob);
-
-    const content = await zip.generateAsync({ type: "blob" });
-    const url = URL.createObjectURL(content);
+  const downloadObjectLog = () => {
+    const logText = generateDetailedObjectReport();
+    const blob = new Blob([logText], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = originalFileName.replace(/\.[^/.]+$/, "") + '_migration_package.zip';
+    a.download = originalFileName.replace(/\.[^/.]+$/, "") + '_object_migration_log.txt';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
 
-  const generateMarkdownReport = () => {
-    return `# SQL Server Migration Assessment Report
-Generated from: ${originalFileName}
-Dialect: ${sourceDialect.toUpperCase()}
+  const generateTriggerLog = () => {
+    let log = "Source Schema | Source Trigger Name | Source Parent Table | Trigger Source | Reason for generation | Target Trigger Name | Migration Status\n";
+    log += "---|---|---|---|---|---|---\n";
 
-## Conversion Summary
-- Total Objects Parsed: ${reportData.stats.total}
-- Tables Converted: ${reportData.stats.TABLE}
-- Constraints Converted: ${reportData.stats.CONSTRAINT}
-- Sequences Converted: ${reportData.stats.SEQUENCE}
-- Programmable Objects (Views/Procedures/Functions/Triggers): ${reportData.stats.complex}
-- Translation Warnings Flagged: ${reportData.stats.warnings}
+    const explicitTriggers = objects.filter(o => o.classified.type === 'TRIGGER');
+    explicitTriggers.forEach(obj => {
+      const schema = obj.classified.schema || 'dbo';
+      const name = obj.classified.name;
+      const tableName = obj.classified.tableName || obj.parsed?.tableName || 'Unknown';
+      
+      const { status } = getObjectStatusAndError(obj);
+      const migrationStatus = status === 'Verified' ? 'SUCCESS' : (status === 'Failed' ? 'FAILED' : 'SKIPPED');
 
-## Object Type Breakdown
-${Object.keys(reportData.stats).filter(k => k !== 'total' && k !== 'complex' && reportData.stats[k] > 0).map(k => `- ${k}: ${reportData.stats[k]}`).join('\n')}
+      log += `${schema} | ${name} | ${tableName} | EXPLICIT | N/A | ${name} | ${migrationStatus}\n`;
+    });
 
-## Post-Conversion Validation Summary
-- Syntax Errors: ${validationReport?.errors?.length || 0}
-- Warnings: ${validationReport?.warnings?.length || 0}
-- Manual Checks Needed: ${validationReport?.manualFixes?.length || 0}
+    objects.forEach(obj => {
+      if (obj.classified.type === 'TABLE' && obj.parsed?.columns) {
+        const hasOnUpdate = obj.parsed.columns.some(c => c.onUpdateExpr);
+        if (hasOnUpdate) {
+          const schema = obj.classified.schema || 'dbo';
+          const tableName = obj.classified.name;
+          log += `${schema} | NULL | ${tableName} | GENERATED | ON UPDATE CURRENT_TIMESTAMP | NULL | SKIPPED (Bypassed per rule)\n`;
+        }
+      }
+    });
 
-## Details of Flagged Warnings & Manual Adjustments
-${reportData.warningsList.length === 0 ? '_No logical compiler warnings flagged._' : reportData.warningsList.map((w, idx) => `${idx + 1}. **[${w.type}] ${w.name}**\n   - Warning: ${w.text}`).join('\n')}
-`;
+    return log;
+  };
+
+  const downloadTriggerLog = () => {
+    const logText = generateTriggerLog();
+    const blob = new Blob([logText], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = originalFileName.replace(/\.[^/.]+$/, "") + '_trigger_migration_log.txt';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const downloadReportFile = () => {
@@ -305,13 +710,14 @@ ${reportData.warningsList.length === 0 ? '_No logical compiler warnings flagged.
   };
 
   const startDeployment = async () => {
-    if (!isConnected || ((!bypassErrors && errorCount > 0) || pendingAiCount > 0)) return;
+    if (!isConnected || ((!bypassErrors && errorCount > 0) || (!bypassErrors && pendingAiCount > 0))) return;
     
     setDeployPhase('deploying');
     setDeployProgress(0);
     setDeployTotal(objects.length);
     setDeployLogs([]);
     setDeployResults(null);
+    setCompileResults(null);
     setBackupSessionId(null);
 
     const dbName = `${sqlConfig.dbPrefix}_${Date.now()}`;
@@ -382,6 +788,7 @@ ${reportData.warningsList.length === 0 ? '_No logical compiler warnings flagged.
               } else if (evt.phase === 'complete') {
                 setDeployPhase('backing_up');
                 setDeployResults(evt.data.deployResult);
+                setCompileResults(evt.data.compileResult);
                 
                 // 2. Start Backup via SSE
                 const backupRes = await fetch(getApiUrl('/api/backup/generate'), {
@@ -493,9 +900,9 @@ ${reportData.warningsList.length === 0 ? '_No logical compiler warnings flagged.
               {deployPhase === null && (
                 <>
                   <button 
-                    className={`btn btn-primary deploy-btn ${((!bypassErrors && errorCount > 0) || pendingAiCount > 0) ? 'disabled' : ''}`}
+                    className={`btn btn-primary deploy-btn ${((!bypassErrors && errorCount > 0) || (!bypassErrors && pendingAiCount > 0)) ? 'disabled' : ''}`}
                     onClick={startDeployment}
-                    disabled={(!bypassErrors && errorCount > 0) || pendingAiCount > 0}
+                    disabled={(!bypassErrors && errorCount > 0) || (!bypassErrors && pendingAiCount > 0)}
                   >
                     Deploy & Generate .BAK
                   </button>
@@ -509,16 +916,12 @@ ${reportData.warningsList.length === 0 ? '_No logical compiler warnings flagged.
                           onChange={(e) => setBypassErrors(e.target.checked)}
                           style={{ accentColor: 'var(--primary)', width: '16px', height: '16px', cursor: 'pointer' }}
                         />
-                        <span>Force deploy and generate .BAK (Bypass errors)</span>
+                        <span>Force deploy and generate .BAK (Bypass errors & pending translations)</span>
                       </label>
                     </div>
                   )}
                 </>
               )}
-
-              {errorCount > 0 && !bypassErrors && <p className="deploy-warning">Cannot generate .BAK: {errorCount} objects have errors</p>}
-              {errorCount > 0 && bypassErrors && <p className="deploy-warning" style={{ color: 'var(--warning)' }}>Warning: Force deploying with {errorCount} errors. Some objects may fail to create.</p>}
-              {pendingAiCount > 0 && <p className="deploy-warning">{pendingAiCount} objects pending AI translation</p>}
 
               {deployPhase !== null && (
                 <div className="deploy-progress-container">
@@ -537,25 +940,193 @@ ${reportData.warningsList.length === 0 ? '_No logical compiler warnings flagged.
                     </div>
                   )}
 
-                  <div className="deploy-log">
-                    {deployLogs.map((log, i) => (
-                      <div key={i} className={`deploy-log-entry ${log.type}`}>
-                        {log.msg}
+                  {deployPhase === 'backing_up' && (
+                    <div className="deploy-progress">
+                      <div className="progress-text">Generating SQL Server Backup (.BAK)...</div>
+                      <div className="progress-bar">
+                        <div className="progress-bar-fill" style={{ width: '85%', animation: 'pulse 1.5s infinite' }}></div>
                       </div>
-                    ))}
-                  </div>
+                    </div>
+                  )}
 
                   {deployPhase === 'completed' && (
-                    <div className="deploy-success-actions">
-                      {backupSessionId && (
-                        <a href={getApiUrl(`/api/backup/download/${backupSessionId}`)} className="btn btn-primary" download>
-                          Download .BAK
-                        </a>
+                    <div className="migration-summary-dashboard">
+                      <h4 className="dashboard-title">Migration Summary Dashboard</h4>
+                      
+                      <div className="dashboard-cards-grid">
+                        <div className="dashboard-card success-rate-card">
+                          <div className="card-label">Overall Success Rate</div>
+                          <div className="card-value">{totalStats.rate}%</div>
+                          <div className="card-desc">{totalStats.migrated} of {totalStats.source} objects verified</div>
+                        </div>
+                        <div className="dashboard-card verified-card">
+                          <div className="card-label">Verified Objects</div>
+                          <div className="card-value text-success">{totalStats.migrated}</div>
+                          <div className="card-desc">Created in target database</div>
+                        </div>
+                        <div className="dashboard-card failed-card">
+                          <div className="card-label">Failed Objects</div>
+                          <div className="card-value text-error">{totalStats.failed}</div>
+                          <div className="card-desc">Failed compilation or creation</div>
+                        </div>
+                        <div className="dashboard-card skipped-card">
+                          <div className="card-label">Skipped Objects</div>
+                          <div className="card-value text-warning">{totalStats.skipped}</div>
+                          <div className="card-desc">Skipped during deployment</div>
+                        </div>
+                      </div>
+
+                      {!activeDrillDown ? (
+                        <div className="breakdown-table-container">
+                          <h5>Object Type Breakdown</h5>
+                          <table className="object-counts-table">
+                            <thead>
+                              <tr>
+                                <th>Object Type</th>
+                                <th>Source Count</th>
+                                <th>Target Count</th>
+                                <th>Migrated</th>
+                                <th>Missing</th>
+                                <th>Failed</th>
+                                <th>Extra</th>
+                                <th>Success %</th>
+                                <th>Action</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {categoryStats.map(cat => (
+                                <tr key={cat.label}>
+                                  <td><strong>{cat.label}</strong></td>
+                                  <td>{cat.sourceCount}</td>
+                                  <td>{cat.targetCount}</td>
+                                  <td className="text-success">{cat.migrated}</td>
+                                  <td className={cat.missing > 0 ? "text-warning" : ""}>{cat.missing}</td>
+                                  <td className={cat.failed > 0 ? "text-error" : ""}>{cat.failed}</td>
+                                  <td className={cat.extra > 0 ? "text-error" : ""}>{cat.extra}</td>
+                                  <td>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                      <div className="success-bar-container" style={{ width: '60px', height: '8px', background: 'rgba(255,255,255,0.05)', borderRadius: '4px', overflow: 'hidden' }}>
+                                        <div className="success-bar-fill" style={{ height: '100%', background: 'var(--success)', width: `${cat.successRate}%` }}></div>
+                                      </div>
+                                      <span>{cat.successRate}%</span>
+                                    </div>
+                                  </td>
+                                  <td>
+                                    <button 
+                                      className="btn btn-secondary btn-sm"
+                                      onClick={() => setActiveDrillDown(cat.type)}
+                                      disabled={cat.sourceCount === 0}
+                                      style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem' }}
+                                    >
+                                      View Details ➔
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <div className="drilldown-table-container">
+                          <div className="drilldown-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                            <h5>Details for: {drillDownCat?.label}</h5>
+                            <button 
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => setActiveDrillDown(null)}
+                            >
+                              ← Back to Summary
+                            </button>
+                          </div>
+                          
+                          <div style={{ maxHeight: '350px', overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
+                            <table className="object-counts-table" style={{ margin: 0 }}>
+                              <thead>
+                                <tr>
+                                  <th>Schema</th>
+                                  <th>Object Name</th>
+                                  <th>Status</th>
+                                  <th>Error / Reason</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {drillDownCat?.items.map(item => (
+                                  <tr key={item.id}>
+                                    <td><code>{item.schema}</code></td>
+                                    <td><code>{item.name}</code></td>
+                                    <td>
+                                      <span className={`status-badge ${item.status.toLowerCase()}`}>
+                                        {item.status}
+                                      </span>
+                                    </td>
+                                    <td className="error-cell-text" style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                                      {item.error ? <code>{item.error}</code> : <span style={{ color: 'var(--success)' }}>✓ OK</span>}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
                       )}
-                      <button className="btn btn-secondary" onClick={downloadReportFile}>
-                        Download Validation Report
-                      </button>
+
+                      <div className="deploy-success-actions" style={{ marginTop: '1.5rem', display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+                        {backupSessionId && (
+                          <a 
+                            href={getApiUrl(`/api/backup/download/${backupSessionId}`)} 
+                            className={`btn ${bypassErrors ? 'btn-warning' : 'btn-primary'}`}
+                            style={bypassErrors ? { backgroundColor: 'var(--warning)', borderColor: 'var(--warning)', color: '#000', fontWeight: '800' } : {}}
+                            download
+                          >
+                            {bypassErrors ? '⚠️ Download Draft .BAK' : 'Download .BAK'}
+                          </a>
+                        )}
+                        <button className="btn btn-secondary" onClick={downloadReportFile}>
+                          Download Validation Report
+                        </button>
+                        <button className="btn btn-secondary" onClick={downloadTriggerLog}>
+                          Download Trigger Log
+                        </button>
+                        <button className="btn btn-secondary" onClick={downloadObjectLog}>
+                          Download Object Log
+                        </button>
+                        <button 
+                          className="btn btn-secondary"
+                          onClick={() => {
+                            setDeployPhase(null);
+                            setCompileResults(null);
+                            setActiveDrillDown(null);
+                            setDeployLogs([]);
+                          }}
+                        >
+                          New Deployment
+                        </button>
+                      </div>
                     </div>
+                  )}
+
+                  {deployPhase !== 'completed' && (
+                    <div className="deploy-log">
+                      {deployLogs.map((log, i) => (
+                        <div key={i} className={`deploy-log-entry ${log.type}`}>
+                          {log.msg}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  
+                  {deployPhase === 'completed' && (
+                    <details className="deploy-log-details" style={{ marginTop: '1.5rem' }}>
+                      <summary style={{ cursor: 'pointer', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                        View Raw Deployment Logs ({deployLogs.length} entries)
+                      </summary>
+                      <div className="deploy-log" style={{ marginTop: '0.5rem', maxHeight: '180px' }}>
+                        {deployLogs.map((log, i) => (
+                          <div key={i} className={`deploy-log-entry ${log.type}`}>
+                            {log.msg}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
                   )}
                 </div>
               )}

@@ -42,7 +42,7 @@ export default function App() {
       requiresAi: o.translation.requiresAi,
       parsed: o.classified.parsed
     }));
-    const report = validateMigration(items);
+    const report = validateMigration(items, sourceDialect);
     setValidationReport(report);
   }, [objects]);
   const [theme, setTheme] = useState(() => {
@@ -152,6 +152,9 @@ export default function App() {
         if (!['gemini-3.1-flash-lite', 'gemini-3.5-flash', 'gemini-3.1-pro'].includes(parsed.model)) {
           parsed.model = 'gemini-3.1-flash-lite';
         }
+        if (parsed.preserveSchema === undefined) {
+          parsed.preserveSchema = true;
+        }
         return parsed;
       } catch (e) {
         console.error('Failed to parse settings', e);
@@ -163,6 +166,7 @@ export default function App() {
       model: 'gemini-3.1-flash-lite',
       deploymentMode: 'migration',
       sqlServerVersion: '2017+',
+      preserveSchema: true,
       sqlServerConfig: {
         server: 'localhost',
         authMode: 'windows',
@@ -316,6 +320,67 @@ export default function App() {
         }
       });
     });
+
+    // 2c. Extract inline foreign keys from tables and turn them into separate CONSTRAINT objects
+    const fkStatements = [];
+    const cleanIdentifier = (id) => id.replace(/[`"\[\]]/g, '').trim();
+
+    finalClassStatements.forEach(obj => {
+      if (obj.type === 'TABLE' && obj.parsed && obj.parsed.constraints) {
+        const remainingConstraints = [];
+        obj.parsed.constraints.forEach(cons => {
+          const upperCons = cons.toUpperCase().trim();
+          const isFk = upperCons.includes('FOREIGN KEY') || upperCons.startsWith('FOREIGN KEY');
+          if (isFk) {
+            // Find constraint name if any
+            let constName = `fk_${obj.name}_${Math.random().toString(36).substring(2, 7)}`;
+            const nameMatch = cons.match(/CONSTRAINT\s+([^\s;]+)\s+/i);
+            if (nameMatch) {
+              constName = cleanIdentifier(nameMatch[1]);
+            }
+            
+            let fkBody = cons.trim();
+            const fkMatch = fkBody.match(/CONSTRAINT\s+[^\s;]+\s+(FOREIGN\s+KEY.*)/i);
+            if (fkMatch) {
+              fkBody = fkMatch[1];
+            }
+            
+            fkStatements.push({
+              id: Math.random().toString(36).substring(2, 9),
+              type: 'CONSTRAINT',
+              name: constName,
+              schema: obj.schema,
+              raw: `ALTER TABLE \`${obj.schema}\`.\`${obj.name}\` ADD CONSTRAINT \`${constName}\` ${fkBody};`,
+              clean: `ALTER TABLE ${obj.schema}.${obj.name} ADD CONSTRAINT ${constName} ${fkBody}`,
+              parsed: {
+                tableName: obj.name,
+                definition: `CONSTRAINT \`${constName}\` ${fkBody}`
+              },
+              warnings: [],
+              sourceFile: obj.sourceFile
+            });
+          } else {
+            remainingConstraints.push(cons);
+          }
+        });
+        obj.parsed.constraints = remainingConstraints;
+      }
+    });
+
+    finalClassStatements.push(...fkStatements);
+    
+    // De-duplicate finalClassStatements to make sure we don't have identical raw statements
+    const uniqueClassStatements = [];
+    const seenRaw = new Set();
+    finalClassStatements.forEach(stmt => {
+      const key = `${stmt.type}:${stmt.schema}.${stmt.name}:${stmt.clean.substring(0, 100)}`;
+      if (!seenRaw.has(key)) {
+        seenRaw.add(key);
+        uniqueClassStatements.push(stmt);
+      }
+    });
+    finalClassStatements = uniqueClassStatements;
+
 
     const enumsMap = {};
     const domainsMap = {};
@@ -491,7 +556,7 @@ export default function App() {
         };
       });
 
-      const validationReport = validateMigration(testObjects);
+      const validationReport = validateMigration(testObjects, sourceDialect);
       const objLabel = `[${objToTranslate.classified.schema}].[${objToTranslate.classified.name}] (${objToTranslate.classified.type})`;
       const objErrors = validationReport.errors.filter(e => e.objectName === objLabel);
 
@@ -578,6 +643,11 @@ export default function App() {
         });
 
         setObjects(currentObjects);
+        
+        // Add a 4.5-second delay between requests to stay under the 15 RPM Free Tier limit
+        if (obj !== pendingObjects[pendingObjects.length - 1]) {
+          await new Promise(resolve => setTimeout(resolve, 4500));
+        }
       } catch (err) {
         console.error(`AI Bulk Translation failed for object ${obj.classified.name}:`, err);
       } finally {

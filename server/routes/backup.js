@@ -52,6 +52,7 @@ router.post('/generate', async (req, res) => {
     
     if (verification.verified) {
       session.backupPath = backupPath;
+      session.bypassErrors = !!bypassErrors;
       sessions.set(sessionId, session);
       sendEvent('complete', 'Backup completed successfully', { verification });
     } else {
@@ -74,7 +75,12 @@ router.get('/download/:sessionId', (req, res) => {
     return res.status(404).json({ error: 'Backup not found for this session' });
   }
   
-  res.download(session.backupPath, `${session.dbName}.bak`, (err) => {
+  const isDraft = !!session.bypassErrors;
+  const downloadName = isDraft 
+    ? `DRAFT-INCOMPLETE-DO-NOT-DEPLOY-${session.dbName}.bak`
+    : `${session.dbName}.bak`;
+
+  res.download(session.backupPath, downloadName, (err) => {
     if (err) {
       console.error('Error downloading backup:', err);
       if (!res.headersSent) {

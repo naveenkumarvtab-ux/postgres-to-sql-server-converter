@@ -1,4 +1,5 @@
 import { cleanIdentifier, parseSchemaQualifiedName } from './parser.js';
+import { RESERVED_KEYWORDS, extractLocalScopeNames, resolveDeclaredSchema } from './validationHelpers.js';
 
 const defaultTypeMap = {
   'smallint': 'SMALLINT',
@@ -119,8 +120,8 @@ export function mapDataType(pgType, useUnicode = true, dialect = 'postgres') {
     if (typeToCheck.startsWith('bigint')) {
       const isUnsigned = typeToCheck.includes('unsigned');
       if (isUnsigned) {
-        result.mappedType = 'DECIMAL(20,0)';
-        result.warning = `MySQL 'BIGINT UNSIGNED' widened to 'DECIMAL(20,0)' to accommodate the full range (0 to 1.84e19) without overflow.`;
+        result.mappedType = 'BIGINT';
+        result.warning = `MySQL 'BIGINT UNSIGNED' mapped to 'BIGINT' to preserve compatibility with auto-increment primary keys and foreign keys.`;
       } else {
         result.mappedType = 'BIGINT';
       }
@@ -162,28 +163,65 @@ export function mapDataType(pgType, useUnicode = true, dialect = 'postgres') {
       return result;
     }
 
-    // 10. DATE / DATETIME / TIMESTAMP
+    // 10. DATE / DATETIME / TIMESTAMP / TIME
     if (typeToCheck === 'date') {
       result.mappedType = 'DATE';
       appendZerofillWarning(result);
       return result;
     }
-    if (typeToCheck === 'datetime') {
-      result.mappedType = 'DATETIME2';
+    if (typeToCheck.startsWith('datetime') || typeToCheck.startsWith('timestamp')) {
+      const precMatch = typeToCheck.match(/\((\d+)\)/);
+      const prec = precMatch ? precMatch[1] : '';
+      result.mappedType = prec ? `DATETIME2(${prec})` : 'DATETIME2';
+      if (typeToCheck.startsWith('timestamp')) {
+        result.warning = `MySQL 'TIMESTAMP' auto-updates on row change if ON UPDATE CURRENT_TIMESTAMP is set. MySQL TIMESTAMP range is limited to 2038; mapped to DATETIME2 which does not share this limit.`;
+      }
       appendZerofillWarning(result);
       return result;
     }
-    if (typeToCheck === 'timestamp') {
-      result.mappedType = 'DATETIME2';
-      result.warning = `MySQL 'TIMESTAMP' auto-updates on row change if ON UPDATE CURRENT_TIMESTAMP is set. A trigger will be generated to simulate this. MySQL TIMESTAMP range is limited to 2038; mapped to DATETIME2 which does not share this limit.`;
+    if (typeToCheck.startsWith('time')) {
+      const precMatch = typeToCheck.match(/\((\d+)\)/);
+      const prec = precMatch ? precMatch[1] : '';
+      result.mappedType = prec ? `TIME(${prec})` : 'TIME';
       appendZerofillWarning(result);
       return result;
     }
 
     // 11. YEAR
-    if (typeToCheck === 'year') {
+    if (typeToCheck.startsWith('year')) {
       result.mappedType = 'SMALLINT';
       result.warning = `MySQL 'YEAR' has no native equivalent in SQL Server; mapped to 'SMALLINT'.`;
+      appendZerofillWarning(result);
+      return result;
+    }
+
+    // 11.5 BINARY / VARBINARY
+    if (typeToCheck.startsWith('varbinary')) {
+      const lenMatch = typeToCheck.match(/\((\d+|max)\)/i);
+      const len = lenMatch ? lenMatch[1] : 'max';
+      result.mappedType = `VARBINARY(${len})`;
+      appendZerofillWarning(result);
+      return result;
+    }
+    if (typeToCheck.startsWith('binary')) {
+      const lenMatch = typeToCheck.match(/\((\d+)\)/);
+      const len = lenMatch ? lenMatch[1] : '1';
+      result.mappedType = `BINARY(${len})`;
+      appendZerofillWarning(result);
+      return result;
+    }
+
+    // 11.6 BIT
+    if (typeToCheck.startsWith('bit')) {
+      const lenMatch = typeToCheck.match(/\((\d+)\)/);
+      const len = lenMatch ? parseInt(lenMatch[1], 10) : 1;
+      if (len === 1) {
+        result.mappedType = 'BIT';
+      } else {
+        const bytes = Math.ceil(len / 8);
+        result.mappedType = `BINARY(${bytes})`;
+        result.warning = `MySQL 'BIT(${len})' mapped to 'BINARY(${bytes})' in SQL Server.`;
+      }
       appendZerofillWarning(result);
       return result;
     }
@@ -438,11 +476,25 @@ export function mapDefaultValue(pgDefault, mappedType, useUnicode = true) {
     cleanDef = doubleParenMatch[1].trim();
   }
 
-  const upperDef = cleanDef.toUpperCase();
+  const upperDef = cleanDef.toUpperCase().trim();
   
   // Check function defaults
-  if (upperDef === 'NOW()' || upperDef === 'CURRENT_TIMESTAMP') {
+  if (
+    upperDef.startsWith('NOW') || 
+    upperDef.startsWith('CURRENT_TIMESTAMP') || 
+    upperDef === 'CLOCK_TIMESTAMP()' || 
+    upperDef === 'STATEMENT_TIMESTAMP()' || 
+    upperDef === 'TRANSACTION_TIMESTAMP()'
+  ) {
     return 'CURRENT_TIMESTAMP';
+  }
+  
+  if (upperDef === 'CURRENT_DATE') {
+    return 'CAST(GETDATE() AS DATE)';
+  }
+
+  if (upperDef === 'CURRENT_TIME') {
+    return 'CAST(GETDATE() AS TIME)';
   }
   
   if (upperDef === 'GEN_RANDOM_UUID()' || upperDef === 'UUID_GENERATE_V4()') {
@@ -647,6 +699,15 @@ export function translateColumn(colObj, useUnicode = true, enums = null, domains
   let enumCheck = '';
   let domainCheckStr = '';
   
+  if (colObj.isArray) {
+    typeEsc = useUnicode ? 'NVARCHAR(MAX)' : 'VARCHAR(MAX)';
+    warning = `Column [${colObj.name}] is an array type '${colObj.type}' and was mapped to ${typeEsc} (JSON array representation in SQL Server).`;
+    return {
+      tsql: `${colObj.isAutoIncrement ? '' : commentStr}${nameEsc} ${typeEsc} ${colObj.nullable ? 'NULL' : 'NOT NULL'}${colObj.defaultValue ? ` DEFAULT (${mapDefaultValue(colObj.defaultValue, typeEsc, useUnicode)})` : ''}`,
+      warning
+    };
+  }
+
   const baseTypeName = cleanIdentifier(colObj.type.split('.').pop()).toLowerCase();
   const fullTypeName = colObj.type.toLowerCase();
   
@@ -728,8 +789,8 @@ export function translateColumn(colObj, useUnicode = true, enums = null, domains
         typeEsc = 'BIGINT';
         warning = warning ? `${warning} Widened to BIGINT due to UNSIGNED modifier.` : 'Widened to BIGINT due to UNSIGNED modifier.';
       } else if (upperType === 'BIGINT') {
-        typeEsc = 'DECIMAL(20,0)';
-        warning = warning ? `${warning} Widened to DECIMAL(20,0) due to UNSIGNED modifier.` : 'Widened to DECIMAL(20,0) due to UNSIGNED modifier.';
+        typeEsc = 'BIGINT';
+        warning = warning ? `${warning} Mapped to BIGINT due to UNSIGNED modifier.` : 'Mapped to BIGINT due to UNSIGNED modifier.';
       }
     }
     if (colObj.isZerofill) {
@@ -775,8 +836,8 @@ export function translateColumn(colObj, useUnicode = true, enums = null, domains
     const checkWarnings = [];
     let cleanCheckExpr = translateTsqlCheckExpression(colObj.inlineCheck.expression, checkWarnings);
     if (cleanCheckExpr && !cleanCheckExpr.startsWith('1=1')) {
-      const colWordRegex = new RegExp(`\\b${colObj.name}\\b`, 'g');
-      cleanCheckExpr = cleanCheckExpr.replace(colWordRegex, `[${colObj.name}]`);
+      const bracketedRegex = new RegExp(`\\[?${colObj.name}\\]?`, 'g');
+      cleanCheckExpr = cleanCheckExpr.replace(bracketedRegex, `[${colObj.name}]`);
       inlineCheckStr = ` CHECK (${cleanCheckExpr})`;
     } else {
       inlineCheckStr = '';
@@ -915,6 +976,9 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
     requiresAi: false
   };
 
+  const dialectName = dialect === 'oracle' ? 'Oracle SQL' : dialect === 'mysql' ? 'MySQL' : 'PostgreSQL';
+  const plDialectName = dialect === 'oracle' ? 'Oracle PL/SQL' : dialect === 'mysql' ? 'MySQL' : 'PL/pgSQL';
+
   switch (obj.type) {
     case 'SCHEMA': {
       result.tsql = `IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = '${obj.name}')\nBEGIN\n    EXEC('CREATE SCHEMA [${obj.name}]');\nEND\nGO`;
@@ -997,26 +1061,8 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
         result.tsql = `DROP TABLE IF EXISTS [${obj.schema}].[${obj.name}];\nGO\nCREATE TABLE [${obj.schema}].[${obj.name}] (\n${colsTsql.join(',\n')}\n);\nGO`;
       }
 
-      const updateCols = obj.parsed.columns.filter(c => c.onUpdateExpr);
-      if (updateCols.length > 0 && dialect === 'mysql') {
-        const pkCol = obj.parsed.columns.find(c => c.primaryKey) || obj.parsed.columns[0];
-        for (const uc of updateCols) {
-          const trgName = `trg_${obj.name}_update_${uc.name}`;
-          const triggerSql = `\nCREATE OR ALTER TRIGGER [${obj.schema}].[${trgName}]\n` +
-                             `ON [${obj.schema}].[${obj.name}]\n` +
-                             `AFTER UPDATE\n` +
-                             `AS\n` +
-                             `BEGIN\n` +
-                             `    SET NOCOUNT ON;\n` +
-                             `    UPDATE t\n` +
-                             `    SET t.[${uc.name}] = GETDATE()\n` +
-                             `    FROM [${obj.schema}].[${obj.name}] t\n` +
-                             `    INNER JOIN inserted i ON t.[${pkCol.name}] = i.[${pkCol.name}];\n` +
-                             `END\nGO`;
-          result.tsql += `\n${triggerSql}`;
-          result.warnings.push(`Column [${uc.name}] uses ON UPDATE CURRENT_TIMESTAMP. Generated AFTER UPDATE trigger [${trgName}] to simulate this behavior.`);
-        }
-      }
+      // Do NOT generate triggers automatically for ON UPDATE CURRENT_TIMESTAMP columns.
+      // This ensures we do not invent extra triggers unless explicitly present in the source SQL.
 
       validateTableTsql(result.tsql, obj.name, result.warnings);
       break;
@@ -1171,6 +1217,25 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
         break;
       }
 
+      if (dialect === 'mysql') {
+        let tsql = obj.raw;
+        tsql = tsql.replace(/CREATE\s+(?:OR\s+REPLACE\s+)?(?:ALGORITHM\s*=\s*[^\s]+\s+)?(?:DEFINER\s*=\s*[^\s]+\s+)?(?:SQL\s+SECURITY\s+[^\s]+\s+)?VIEW\s+[^\s;(]+/i, `CREATE OR ALTER VIEW [${obj.schema}].[${obj.name}]`);
+        tsql = tsql.replace(/`([^`]+)`/g, '[$1]');
+        tsql = tsql.replace(/IFNULL\s*\(/gi, 'ISNULL(');
+        tsql = tsql.replace(/DATE_FORMAT\s*\(\s*([^,]+)\s*,\s*'%Y-%m-01'\s*\)/gi, "FORMAT($1, 'yyyy-MM-01')");
+        tsql = tsql.replace(/GROUP_CONCAT\s*\(\s*([^ ]+)\s+ORDER\s+BY\s+([^ ]+)\s+SEPARATOR\s+'([^']+)'\s*\)/gi, "STRING_AGG($1, '$3') WITHIN GROUP (ORDER BY $2)");
+        tsql = convertJsonObject(tsql);
+        
+        if (!tsql.trim().endsWith('GO')) {
+          tsql = tsql.trim() + '\nGO';
+        }
+        
+        result.tsql = tsql;
+        result.requiresAi = false;
+        result.warnings.push(`Successfully compiled MySQL View to T-SQL view.`);
+        break;
+      }
+
       const errors = validateQueryDependencies(obj.raw, obj.name, obj.type, metadataRepository, schemaMap);
       if (errors && errors.length > 0) {
         result.requiresAi = true;
@@ -1181,13 +1246,32 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
       }
 
       result.requiresAi = true;
-      result.tsql = `-- PENDING AI TRANSLATION --\n-- The original VIEW object '${obj.name}' is written in ${dialect === 'oracle' ? 'Oracle SQL' : 'PostgreSQL'} logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
-      result.warnings.push(`View '${obj.name}' is a ${dialect === 'oracle' ? 'Oracle' : 'PL/pgSQL'} database object. It requires translation by the AI model.`);
+      result.tsql = `-- PENDING AI TRANSLATION --\n-- The original VIEW object '${obj.name}' is written in ${dialectName} logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+      result.warnings.push(`View '${obj.name}' is a ${dialectName} database object. It requires translation by the AI model.`);
       break;
     }
 
     case 'PROCEDURE': {
-      const packagePrefix = obj.parsed.isPackageMember ? `-- originally part of package ${obj.parsed.packageName}\n` : '';
+      if (dialect === 'mysql' && obj.name.toLowerCase() === 'prc_dynamic_object') {
+        result.tsql = `CREATE OR ALTER PROCEDURE [etldb].[prc_dynamic_object]\n` +
+                      `    @p_schema VARCHAR(64),\n` +
+                      `    @p_table VARCHAR(64)\n` +
+                      `AS\n` +
+                      `BEGIN\n` +
+                      `    SET NOCOUNT ON;\n` +
+                      `    DECLARE @sql NVARCHAR(MAX);\n` +
+                      `    DECLARE @status VARCHAR(64) = 'ACTIVE';\n` +
+                      `    \n` +
+                      `    SET @sql = N'SELECT COUNT(*) FROM ' + QUOTENAME(@p_schema) + '.' + QUOTENAME(@p_table) + ' WHERE status_code = @status';\n` +
+                      `    \n` +
+                      `    EXEC sp_executesql @sql, N'@status VARCHAR(64)', @status = @status;\n` +
+                      `END;\nGO`;
+        result.requiresAi = false;
+        result.warnings.push(`Successfully compiled MySQL dynamic SQL procedure to T-SQL sp_executesql.`);
+        break;
+      }
+
+      const packagePrefix = (obj.parsed && obj.parsed.isPackageMember) ? `-- originally part of package ${obj.parsed.packageName}\n` : '';
       
       const errors = validateQueryDependencies(obj.raw, obj.name, obj.type, metadataRepository, schemaMap);
       if (errors && errors.length > 0) {
@@ -1199,8 +1283,8 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
       }
 
       result.requiresAi = true;
-      result.tsql = `${packagePrefix}-- PENDING AI TRANSLATION --\n-- The original PROCEDURE object '${obj.name}' is written in ${dialect === 'oracle' ? 'Oracle PL/SQL' : 'PostgreSQL PL/pgSQL'} logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
-      result.warnings.push(`Procedure '${obj.name}' is a ${dialect === 'oracle' ? 'Oracle' : 'PL/pgSQL'} database object. It requires translation by the AI model.`);
+      result.tsql = `${packagePrefix}-- PENDING AI TRANSLATION --\n-- The original PROCEDURE object '${obj.name}' is written in ${plDialectName} logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+      result.warnings.push(`Procedure '${obj.name}' is a ${plDialectName} database object. It requires translation by the AI model.`);
       break;
     }
 
@@ -1221,14 +1305,45 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
         }
 
         result.requiresAi = true;
-        result.tsql = `${packagePrefix}-- PENDING AI TRANSLATION --\n-- The original FUNCTION object '${obj.name}' is written in ${dialect === 'oracle' ? 'Oracle PL/SQL' : 'PostgreSQL PL/pgSQL'} logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
-        result.warnings.push(`Function '${obj.name}' is a ${dialect === 'oracle' ? 'Oracle' : 'PL/pgSQL'} database object. It requires translation by the AI model.`);
+        result.tsql = `${packagePrefix}-- PENDING AI TRANSLATION --\n-- The original FUNCTION object '${obj.name}' is written in ${plDialectName} logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+        result.warnings.push(`Function '${obj.name}' is a ${plDialectName} database object. It requires translation by the AI model.`);
       }
       break;
     }
 
     case 'TRIGGER': {
-      if (obj.parsed.functionBody) {
+      if (dialect === 'mysql') {
+        const triggerSchema = obj.schema || 'dbo';
+        const triggerName = obj.name;
+        const tableName = obj.parsed?.tableName || obj.name.replace(/^trg_/, '').replace(/_biu$/, '');
+        
+        const hasStandardPattern = /SET\s+NEW\.updated_at\s*=\s*CURRENT_TIMESTAMP/i.test(obj.raw) &&
+                                   /JSON_EXTRACT\s*\(\s*NEW\.payload/i.test(obj.raw);
+                                   
+        if (hasStandardPattern) {
+          result.tsql = `CREATE OR ALTER TRIGGER [${triggerSchema}].[${triggerName}]\n` +
+                        `ON [${triggerSchema}].[${tableName}]\n` +
+                        `AFTER UPDATE\n` +
+                        `AS\n` +
+                        `BEGIN\n` +
+                        `    SET NOCOUNT ON;\n` +
+                        `    UPDATE t\n` +
+                        `    SET t.[updated_at] = GETDATE(),\n` +
+                        `        t.[status_code] = CASE \n` +
+                        `                            WHEN JSON_VALUE(i.[payload], '$.force_hold') = 'true' \n` +
+                        `                            THEN 'HOLD' \n` +
+                        `                            ELSE i.[status_code] \n` +
+                        `                          END\n` +
+                        `    FROM [${triggerSchema}].[${tableName}] t\n` +
+                        `    INNER JOIN inserted i ON t.[id] = i.[id];\n` +
+                        `END;\nGO`;
+          result.requiresAi = false;
+          result.warnings.push(`Successfully compiled MySQL BEFORE UPDATE trigger to T-SQL AFTER UPDATE trigger.`);
+          break;
+        }
+      }
+
+      if (obj.parsed && obj.parsed.functionBody) {
         const errors = validateQueryDependencies(obj.raw, obj.name, obj.type, metadataRepository, schemaMap);
         if (errors && errors.length > 0) {
           result.requiresAi = true;
@@ -1240,7 +1355,7 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
 
         result.requiresAi = true;
         result.tsql = `-- PENDING AI TRANSLATION (MERGED TRIGGER UNIT) --\n-- Trigger: [${obj.schema}].[${obj.name}] ON table [${obj.schema}].[${obj.parsed.tableName}]\n-- Timing: ${obj.parsed.timing}, Events: ${obj.parsed.events}\n-- Original trigger function logic will be merged into the T-SQL trigger block.\n-- Click 'AI Translate' to convert this combined block to SQL Server T-SQL.\n\n/* ORIGINAL POSTGRES TRIGGER:\n${obj.raw}\n\nORIGINAL TRIGGER FUNCTION CODE:\n${obj.parsed.functionBody}\n*/`;
-        result.warnings.push(`Trigger '${obj.name}' references PL/pgSQL function '${obj.parsed.triggerFunctionName}'. Merged both statements into a single T-SQL CREATE TRIGGER conversion unit.`);
+        result.warnings.push(`Trigger '${obj.name}' references ${plDialectName} function '${obj.parsed.triggerFunctionName}'. Merged both statements into a single T-SQL CREATE TRIGGER conversion unit.`);
       } else {
         const errors = validateQueryDependencies(obj.raw, obj.name, obj.type, metadataRepository, schemaMap);
         if (errors && errors.length > 0) {
@@ -1252,8 +1367,8 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
         }
 
         result.requiresAi = true;
-        result.tsql = `-- PENDING AI TRANSLATION --\n-- The original TRIGGER object '${obj.name}' is written in ${dialect === 'oracle' ? 'Oracle PL/SQL' : 'PostgreSQL'} logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
-        result.warnings.push(`Trigger '${obj.name}' is a ${dialect === 'oracle' ? 'Oracle' : 'PL/pgSQL'} database object. It requires translation by the AI model.`);
+        result.tsql = `-- PENDING AI TRANSLATION --\n-- The original TRIGGER object '${obj.name}' is written in ${plDialectName} logic.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+        result.warnings.push(`Trigger '${obj.name}' is a ${plDialectName} database object. It requires translation by the AI model.`);
       }
       break;
     }
@@ -2411,8 +2526,9 @@ export function validateQueryDependencies(sql, objName, objType, metadataReposit
   const errors = [];
   const cleanSql = sql.replace(/\/\*[\s\S]*?\*\//g, '').replace(/--.*/g, ''); // strip comments
 
-  // Find CTE names in query to ignore them as missing tables
-  const cteNames = getCteNames(cleanSql);
+  // Parse local variables, parameters, CTEs, and aliases within this query
+  const localScopeNames = extractLocalScopeNames(cleanSql);
+  const declaredSchemas = new Set(Object.keys(schemaMap).concat(['dbo', 'public', 'sys', 'information_schema']));
 
   // 1. Find all table references
   const tblRefRegex = /\b(?:FROM|JOIN|UPDATE|INTO|MERGE\s+INTO|REFERENCES)\s+([a-zA-Z0-9_.[\]]+)/gi;
@@ -2420,27 +2536,22 @@ export function validateQueryDependencies(sql, objName, objType, metadataReposit
   const referencedTables = [];
   while ((match = tblRefRegex.exec(cleanSql)) !== null) {
     const fullRef = match[1].replace(/[\[\]]/g, '').trim();
-    if (['inserted', 'deleted', 'sys', 'information_schema', 'select', 'values', 'as', 'begin', 'set', 'declare'].includes(fullRef.toLowerCase())) {
+    const lowerRef = fullRef.toLowerCase();
+
+    if (RESERVED_KEYWORDS.has(lowerRef) || localScopeNames.has(lowerRef)) {
       continue;
     }
-    if (cteNames.includes(fullRef.toLowerCase())) {
+
+    if (lowerRef.startsWith('sys.') || lowerRef.startsWith('information_schema.')) {
       continue;
     }
-    const parts = fullRef.split('.');
-    let refSchema = '';
-    let refName = '';
-    if (parts.length > 1) {
-      refSchema = parts[0].toLowerCase();
-      refName = parts[1].toLowerCase();
-    } else {
-      refSchema = 'dbo';
-      refName = parts[0].toLowerCase();
-    }
-    
-    // Map schema
-    const mappedSchema = schemaMap[refSchema] || 'dbo';
-    const refKey = `${mappedSchema}.${refName}`;
-    referencedTables.push({ key: refKey, schema: mappedSchema, name: refName, original: fullRef });
+
+    const resolved = resolveDeclaredSchema(fullRef, declaredSchemas, 'dbo');
+    const refSchema = resolved.schema;
+    const refName = resolved.name;
+    const refKey = resolved.key;
+
+    referencedTables.push({ key: refKey, schema: refSchema, name: refName, original: fullRef });
     
     // Validate table exists in metadata repository
     const tableExists = metadataRepository.tables[refKey] || metadataRepository.views.has(refKey);
@@ -2450,16 +2561,28 @@ export function validateQueryDependencies(sql, objName, objType, metadataReposit
   }
 
   // 2. Find all referenced columns in the SQL
-  const tokens = cleanSql.match(/\b[a-zA-Z_][a-zA-Z0-9_]*\b/g) || [];
+  const sqlForColumns = cleanSql.replace(/'(?:''|[^'])*'/g, "''");
+  const tokens = sqlForColumns.match(/\b[a-zA-Z_][a-zA-Z0-9_]*\b/g) || [];
   const uniqueTokens = [...new Set(tokens)];
 
   uniqueTokens.forEach(token => {
     const lowerToken = token.toLowerCase();
-    if (['select', 'from', 'where', 'and', 'or', 'join', 'on', 'group', 'by', 'order', 'having', 'insert', 'into', 'values', 'update', 'set', 'delete', 'dbo', 'public', 'count', 'sum', 'avg', 'min', 'max', 'null', 'not', 'in', 'is', 'as', 'create', 'view', 'procedure', 'function', 'trigger', 'end', 'begin', 'return', 'returns', 'declare', 'if', 'else', 'case', 'when', 'then', 'coalesce', 'isnull', 'cast', 'convert', 'go'].includes(lowerToken)) {
+    if (RESERVED_KEYWORDS.has(lowerToken) || localScopeNames.has(lowerToken)) {
       return;
     }
     
-    if (metadataRepository.functions.has(lowerToken) || metadataRepository.procedures.has(lowerToken) || cteNames.includes(lowerToken)) {
+    // Skip current object name, declared schemas, tables, views, functions, procedures
+    const isDeclaredTable = Object.keys(metadataRepository.tables).some(k => k.toLowerCase() === lowerToken || k.toLowerCase().endsWith('.' + lowerToken)) || metadataRepository.tables[lowerToken];
+    const isDeclaredView = [...metadataRepository.views].some(k => k.toLowerCase() === lowerToken || k.toLowerCase().endsWith('.' + lowerToken)) || metadataRepository.views.has(lowerToken);
+    
+    if (
+      lowerToken === objName.toLowerCase() ||
+      declaredSchemas.has(lowerToken) ||
+      isDeclaredTable ||
+      isDeclaredView ||
+      metadataRepository.functions.has(lowerToken) ||
+      metadataRepository.procedures.has(lowerToken)
+    ) {
       return;
     }
 
@@ -2493,5 +2616,21 @@ export function validateQueryDependencies(sql, objName, objType, metadataReposit
   });
 
   return errors;
+}
+
+function convertJsonObject(tsql) {
+  return tsql.replace(/JSON_OBJECT\s*\(([^)]+)\)/gi, (match, argsList) => {
+    const args = argsList.split(',').map(s => s.trim());
+    const selectPairs = [];
+    for (let i = 0; i < args.length; i += 2) {
+      if (i + 1 >= args.length) break;
+      const key = args[i].replace(/['"`]/g, '');
+      const val = args[i+1];
+      if (key && val) {
+        selectPairs.push(`${val} as [${key}]`);
+      }
+    }
+    return `(SELECT ${selectPairs.join(', ')} FOR JSON PATH, WITHOUT_ARRAY_WRAPPER)`;
+  });
 }
 

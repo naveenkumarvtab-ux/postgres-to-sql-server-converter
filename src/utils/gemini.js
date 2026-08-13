@@ -105,7 +105,8 @@ Ensure that:
     -- SQL Server local temp tables (#TableName) don't persist independently of the session that creates them.
 20. Anonymous PL/SQL Blocks: If translating a standalone anonymous PL/SQL block (starts with DECLARE or BEGIN, not part of a function/procedure), convert it to a plain T-SQL batch (using BEGIN...END). You MUST convert DBMS_OUTPUT.PUT_LINE('text') to PRINT 'text' or PRINT @variable.
 21. Empty String vs NULL Handling: Oracle treats empty strings ('') as NULL. In SQL Server, they are distinct. When translating Oracle DDL or queries containing IS NULL checks on character/string columns (e.g. notes IS NULL), auto-fix this by converting it to check both NULL and empty string: (notes IS NULL OR notes = ''). Apply this auto-fix directly rather than only flagging it.
-22. Return ONLY the valid T-SQL script. DO NOT wrap the code in markdown code blocks (such as \`\`\`sql ... \`\`\`). Do not include any introductory or concluding text. Your entire response must be direct, executable T-SQL code.`;
+22. Variable Prefixing: You MUST prefix all local variables, parameters, and cursor variables with a '@' symbol (e.g., @my_var) both in their DECLARE blocks and everywhere they are referenced/used. Do not reference variables without the '@' prefix, otherwise SQL Server will mistake them for table or column references.
+23. Return ONLY the valid T-SQL script. DO NOT wrap the code in markdown code blocks (such as \`\`\`sql ... \`\`\`). Do not include any introductory or concluding text. Your entire response must be direct, executable T-SQL code.`;
   } else if (sourceDialect === 'mysql') {
     prompt = `You are an expert database administrator. Translate the following MySQL database object (written in MySQL DDL, stored procedure, function, or trigger logic) into its exact Microsoft SQL Server (T-SQL) equivalent.
 
@@ -146,7 +147,9 @@ Ensure that:
     * Append OPTION (MAXRECURSION 100) at the end of the query using the recursive CTE.
     * Support all CTE styles (Simple, Multiple, Recursive, Window function, Aggregate, or DML CTE usage like INSERT/UPDATE/DELETE using CTE).
     * Schema qualify all physical tables (excluding temp tables and CTE names) with [dbo] or mapped schema prefix (e.g. FROM customers becomes FROM [dbo].[customers], UPDATE customers becomes UPDATE [dbo].[customers]).
-19. Return ONLY the valid T-SQL script. DO NOT wrap the code in markdown code blocks (such as \`\`\`sql ... \`\`\`). Do not include any introductory or concluding text. Your entire response must be direct, executable T-SQL code.`;
+19. Variable Prefixing: You MUST prefix all local variables, parameters, and user variables with a '@' symbol (e.g., @my_var) both in their DECLARE blocks and everywhere they are referenced/used. Do not reference variables without the '@' prefix, otherwise SQL Server will mistake them for table or column references.
+20. Trigger Syntax: For Triggers, you MUST strictly use the standard T-SQL trigger syntax: CREATE OR ALTER TRIGGER [schema].[trigger_name] ON [schema].[table_name] AFTER/INSTEAD OF [INSERT/UPDATE/DELETE] AS BEGIN ... END. Never place AFTER/BEFORE ON table_name before the trigger name.
+21. Return ONLY the valid T-SQL script. DO NOT wrap the code in markdown code blocks (such as \`\`\`sql ... \`\`\`). Do not include any introductory or concluding text. Your entire response must be direct, executable T-SQL code.`;
   } else {
     prompt = `You are an expert database administrator. Translate the following PostgreSQL database object (written in PL/pgSQL or SQL) into its exact Microsoft SQL Server (T-SQL) equivalent.
 
@@ -206,6 +209,23 @@ Ensure that:
     });
 
     if (!response.ok) {
+      if (response.status === 429) {
+        console.warn('Gemini API rate limit (429) hit. Pausing for 15 seconds before auto-retrying...');
+        await new Promise(resolve => setTimeout(resolve, 15000));
+        return translatePLpgSQLWithAI({
+          apiKey,
+          objectType,
+          objectName,
+          originalSql,
+          triggerFunctionSql,
+          model,
+          apiVersion,
+          sourceDialect,
+          validationFeedback,
+          schemaMap
+        });
+      }
+
       const errorData = await response.json().catch(() => ({}));
       const errorMessage = errorData.error?.message || `HTTP error! status: ${response.status}`;
       
@@ -258,6 +278,12 @@ Ensure that:
       translatedSql = translatedSql.replace(/^```(sql|tsql)?\n/i, '');
       translatedSql = translatedSql.replace(/\n```$/g, '');
     }
+
+    // Clean up over-bracketed keywords (e.g. CREATE OR [ALTER] FUNCTION)
+    translatedSql = translatedSql.replace(/\bCREATE\s+OR\s+\[ALTER\]\s+FUNCTION\b/gi, 'CREATE OR ALTER FUNCTION');
+    translatedSql = translatedSql.replace(/\bCREATE\s+OR\s+\[ALTER\]\s+PROCEDURE\b/gi, 'CREATE OR ALTER PROCEDURE');
+    translatedSql = translatedSql.replace(/\bCREATE\s+OR\s+\[ALTER\]\s+VIEW\b/gi, 'CREATE OR ALTER VIEW');
+    translatedSql = translatedSql.replace(/\bCREATE\s+OR\s+\[ALTER\]\s+TRIGGER\b/gi, 'CREATE OR ALTER TRIGGER');
 
     return translatedSql.trim();
   } catch (error) {

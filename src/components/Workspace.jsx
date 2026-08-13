@@ -77,6 +77,21 @@ export default function Workspace({
     <div className="workspace-container">
       {/* Workspace Sidebar */}
       <aside className="workspace-sidebar glass-panel">
+        <div className="sidebar-header-actions" style={{ display: 'flex', gap: '0.5rem', padding: '0.75rem 1rem', borderBottom: '1px solid var(--panel-border)' }}>
+          <button className="btn btn-secondary" onClick={onBackToUpload} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.25rem', height: '36px', fontSize: '0.85rem' }} title="Back to file upload">
+            <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 18 9 12 15 6" />
+            </svg>
+            Back
+          </button>
+          <button className="btn btn-primary" onClick={onGoToSummary} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.25rem', height: '36px', fontSize: '0.85rem' }} title="Go to review & export">
+            Next
+            <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
+          </button>
+        </div>
+
         <div className="sidebar-search">
           <input
             type="text"

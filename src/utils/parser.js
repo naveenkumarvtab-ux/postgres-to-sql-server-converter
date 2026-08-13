@@ -41,7 +41,13 @@ let activeDialect = 'postgres';
 // Split schema identifier into [schema, name]
 export function parseSchemaQualifiedName(fullName) {
   const parts = fullName.split('.');
-  if (parts.length > 1) {
+  if (parts.length >= 3) {
+    return {
+      schema: cleanIdentifier(parts[parts.length - 2]),
+      name: cleanIdentifier(parts[parts.length - 1])
+    };
+  }
+  if (parts.length === 2) {
     return {
       schema: cleanIdentifier(parts[0]),
       name: cleanIdentifier(parts[1])
@@ -856,9 +862,10 @@ export function classifyStatement(rawSql, dialect = 'postgres') {
   }
 
   // 6. View
-  if (upperSql.startsWith('CREATE VIEW ') || upperSql.includes(' CREATE OR REPLACE VIEW ') || upperSql.startsWith('CREATE OR REPLACE VIEW ')) {
+  const isView = /CREATE\s+(?:[^;]*\s+)?VIEW\s+[^\s;(]+/i.test(cleanSql);
+  if (isView) {
     obj.type = 'VIEW';
-    const match = cleanSql.match(/CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP|TEMPORARY)?\s*(?:RECURSIVE)?\s*VIEW\s+([^\s;(]+)/i);
+    const match = cleanSql.match(/CREATE\s+(?:[^;]*\s+)?VIEW\s+([^\s;(]+)/i);
     if (match) {
       const qname = parseSchemaQualifiedName(match[1]);
       obj.name = qname.name;
@@ -886,22 +893,39 @@ export function classifyStatement(rawSql, dialect = 'postgres') {
     return obj;
   }
 
-  // 8. Trigger
-  if (upperSql.startsWith('CREATE TRIGGER ') || upperSql.startsWith('CREATE OR REPLACE TRIGGER ')) {
+  if (upperSql.startsWith('CREATE TRIGGER ') || upperSql.startsWith('CREATE OR REPLACE TRIGGER ') || upperSql.includes(' CREATE TRIGGER ') || upperSql.includes(' CREATE OR REPLACE TRIGGER ')) {
     obj.type = 'TRIGGER';
-    const match = cleanSql.match(/CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER\s+([^\s;]+)\s+(BEFORE|AFTER|INSTEAD\s+OF)\s+([\w\s,]+)\s+ON\s+([^\s;]+)\s+.*\s+EXECUTE\s+(?:FUNCTION|PROCEDURE)\s+([^\s;(]+)/i);
-    if (match) {
-      obj.name = cleanIdentifier(match[1]);
-      const tblQname = parseSchemaQualifiedName(match[4]);
+    const nameMatch = cleanSql.match(/CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER\s+([^\s;]+)/i);
+    if (nameMatch) {
+      const qname = parseSchemaQualifiedName(nameMatch[1]);
+      obj.name = qname.name;
+      obj.schema = qname.schema;
+    }
+    const pgMatch = cleanSql.match(/CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER\s+([^\s;]+)\s+(BEFORE|AFTER|INSTEAD\s+OF)\s+([\w\s,]+)\s+ON\s+([^\s;]+)\s+.*\s+EXECUTE\s+(?:FUNCTION|PROCEDURE)\s+([^\s;(]+)/i);
+    if (pgMatch) {
+      const tblQname = parseSchemaQualifiedName(pgMatch[4]);
       obj.schema = tblQname.schema;
-      const funcQname = parseSchemaQualifiedName(match[5]);
+      const funcQname = parseSchemaQualifiedName(pgMatch[5]);
       obj.parsed = {
         tableName: tblQname.name,
-        timing: match[2].toUpperCase(),
-        events: match[3].toUpperCase(),
+        timing: pgMatch[2].toUpperCase(),
+        events: pgMatch[3].toUpperCase(),
         triggerFunctionName: funcQname.name,
         triggerFunctionSchema: funcQname.schema
       };
+    } else {
+      const genericMatch = cleanSql.match(/CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER\s+([^\s;]+)\s+(BEFORE|AFTER)\s+([A-Z\s,]+)\s+ON\s+([^\s;]+)/i);
+      if (genericMatch) {
+        const tblQname = parseSchemaQualifiedName(genericMatch[4]);
+        obj.parsed = {
+          tableName: tblQname.name,
+          timing: genericMatch[2].toUpperCase(),
+          events: genericMatch[3].toUpperCase()
+        };
+        if (!obj.schema) {
+          obj.schema = tblQname.schema;
+        }
+      }
     }
     return obj;
   }
@@ -1076,6 +1100,17 @@ function parseColumnDefinition(columnText) {
       remainder = remainder.substring(typeIndex).trim();
     }
   }
+
+  let inlineCheck = null;
+  if (type.toLowerCase().startsWith('enum(')) {
+    const enumBody = type.substring(5, type.length - 1);
+    const enumBodyN = enumBody.replace(/'([^']+)'/g, "N'$1'");
+    type = 'nvarchar(255)';
+    inlineCheck = {
+      rawCheck: `CHECK ([${colName}] IN (${enumBodyN}))`,
+      expression: `${colName} IN (${enumBodyN})`
+    };
+  }
   
   // Check if type is followed by array brackets e.g. integer[]
   const arrayMatch = remainder.match(/^(\s*\[\s*\])+/);
@@ -1103,9 +1138,15 @@ function parseColumnDefinition(columnText) {
     upperRem = remainder.toUpperCase();
   }
 
-  // Extract MySQL AUTO_INCREMENT
-  const isAutoIncrement = upperRem.includes('AUTO_INCREMENT');
-  if (isAutoIncrement) {
+  // Extract MySQL AUTO_INCREMENT & PostgreSQL/Oracle GENERATED AS IDENTITY
+  let isAutoIncrement = upperRem.includes('AUTO_INCREMENT');
+  const identityMatch = remainder.match(/GENERATED\s+(?:ALWAYS|BY\s+DEFAULT)\s+AS\s+IDENTITY/i);
+  if (identityMatch) {
+    isAutoIncrement = true;
+    remainder = remainder.replace(identityMatch[0], '').trim();
+    upperRem = remainder.toUpperCase();
+  }
+  if (isAutoIncrement && !identityMatch) {
     remainder = remainder.replace(/AUTO_INCREMENT/i, '').trim();
     upperRem = remainder.toUpperCase();
   }
@@ -1144,34 +1185,35 @@ function parseColumnDefinition(columnText) {
   }
 
   // Extract inline CHECK constraints
-  let inlineCheck = null;
-  const checkIndex = upperRem.indexOf('CHECK');
-  if (checkIndex !== -1) {
-    const afterCheckRaw = remainder.substring(checkIndex + 5);
-    const leadingSpaces = afterCheckRaw.length - afterCheckRaw.trimStart().length;
-    const afterCheck = afterCheckRaw.substring(leadingSpaces);
-    if (afterCheck.startsWith('(')) {
-      let level = 0;
-      let closingIdx = -1;
-      for (let j = 0; j < afterCheck.length; j++) {
-        if (afterCheck[j] === '(') level++;
-        if (afterCheck[j] === ')') {
-          level--;
-          if (level === 0) {
-            closingIdx = j;
-            break;
+  if (!inlineCheck) {
+    const checkIndex = upperRem.indexOf('CHECK');
+    if (checkIndex !== -1) {
+      const afterCheckRaw = remainder.substring(checkIndex + 5);
+      const leadingSpaces = afterCheckRaw.length - afterCheckRaw.trimStart().length;
+      const afterCheck = afterCheckRaw.substring(leadingSpaces);
+      if (afterCheck.startsWith('(')) {
+        let level = 0;
+        let closingIdx = -1;
+        for (let j = 0; j < afterCheck.length; j++) {
+          if (afterCheck[j] === '(') level++;
+          if (afterCheck[j] === ')') {
+            level--;
+            if (level === 0) {
+              closingIdx = j;
+              break;
+            }
           }
         }
-      }
-      if (closingIdx !== -1) {
-        const expr = afterCheck.substring(1, closingIdx).trim();
-        inlineCheck = {
-          rawCheck: remainder.substring(checkIndex, checkIndex + 5 + leadingSpaces + closingIdx + 1),
-          expression: expr
-        };
-        // Clean check clause from remainder
-        remainder = remainder.replace(inlineCheck.rawCheck, '').trim();
-        upperRem = remainder.toUpperCase();
+        if (closingIdx !== -1) {
+          const expr = afterCheck.substring(1, closingIdx).trim();
+          inlineCheck = {
+            rawCheck: remainder.substring(checkIndex, checkIndex + 5 + leadingSpaces + closingIdx + 1),
+            expression: expr
+          };
+          // Clean check clause from remainder
+          remainder = remainder.replace(inlineCheck.rawCheck, '').trim();
+          upperRem = remainder.toUpperCase();
+        }
       }
     }
   }

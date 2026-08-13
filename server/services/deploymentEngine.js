@@ -37,8 +37,56 @@ const objectTypeOrder = [
   'CONSTRAINT', 'INDEX', 'VIEW', 'FUNCTION', 'PROCEDURE', 'TRIGGER'
 ];
 
+function sortTopologically(list, allObjects) {
+  const result = [];
+  const visited = new Set();
+  const visiting = new Set();
+
+  function visit(obj) {
+    if (!obj.classified?.id) return;
+    if (visited.has(obj.classified.id)) return;
+    if (visiting.has(obj.classified.id)) {
+      console.warn(`Circular dependency detected: Object '${obj.classified.name}' is part of a dependency loop.`);
+      return;
+    }
+    visiting.add(obj.classified.id);
+
+    const rawTextLower = (obj.translation?.tsql || obj.classified?.raw || '').toLowerCase();
+    allObjects.forEach(other => {
+      if (!other.classified?.id) return;
+      if (other.classified.id === obj.classified.id) return;
+      const otherName = other.classified.name.toLowerCase();
+      const escapedName = otherName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(`\\b${escapedName}\\b`, 'i');
+
+      if (regex.test(rawTextLower)) {
+        visit(other);
+      }
+    });
+
+    visiting.delete(obj.classified.id);
+    visited.add(obj.classified.id);
+    if (list.some(o => o.classified?.id === obj.classified.id)) {
+      result.push(obj);
+    }
+  }
+
+  list.forEach(obj => visit(obj));
+  list.forEach(obj => {
+    if (obj.classified?.id && !result.some(r => r.classified?.id === obj.classified.id)) {
+      result.push(obj);
+    }
+  });
+  return result;
+}
+
 const sortObjects = (objects) => {
-  return [...objects].sort((a, b) => {
+  const routinesTypes = ['VIEW', 'FUNCTION', 'PROCEDURE', 'TRIGGER'];
+  
+  const nonRoutines = objects.filter(o => !routinesTypes.includes((o.classified?.type || '').toUpperCase()));
+  const routines = objects.filter(o => routinesTypes.includes((o.classified?.type || '').toUpperCase()));
+  
+  const sortedNonRoutines = [...nonRoutines].sort((a, b) => {
     const typeA = a.classified?.type || '';
     const typeB = b.classified?.type || '';
     
@@ -50,6 +98,10 @@ const sortObjects = (objects) => {
     
     return indexA - indexB;
   });
+  
+  const sortedRoutines = sortTopologically(routines, objects);
+  
+  return [...sortedNonRoutines, ...sortedRoutines];
 };
 
 const deployObjects = async (pool, dbName, objects, onProgress) => {
