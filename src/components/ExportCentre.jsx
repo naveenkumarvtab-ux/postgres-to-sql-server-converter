@@ -354,6 +354,27 @@ export default function ExportCentre({
     return null;
   }, [deployResults, compileResults]);
 
+  const failedObjects = useMemo(() => {
+    const list = [];
+    objects.forEach(obj => {
+      const res = getDetailedObjectStatus(obj);
+      if (res.status === 'Failed' || res.status === 'Dependency Missing') {
+        let name = obj.classified.name;
+        if (name.includes('.')) {
+          name = name.split('.').pop();
+        }
+        list.push({
+          name: name,
+          schema: obj.classified.schema || 'dbo',
+          type: obj.classified.type,
+          status: res.status,
+          error: res.error
+        });
+      }
+    });
+    return list;
+  }, [objects, getDetailedObjectStatus]);
+
   const drillDownCat = useMemo(() => {
     if (!activeDrillDown) return null;
     return categoryStats.find(cat => cat.type === activeDrillDown);
@@ -1240,6 +1261,46 @@ ${objectLogSection}`;
                           New Deployment
                         </button>
                       </div>
+
+                      {failedObjects.length > 0 && (
+                        <div className="failed-objects-list-container glass-panel" style={{ marginTop: '2rem', borderTop: '2px solid var(--error)', padding: '1.5rem' }}>
+                          <h5 style={{ color: 'var(--error)', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none">
+                              <circle cx="12" cy="12" r="10" />
+                              <line x1="12" y1="8" x2="12" y2="12" />
+                              <line x1="12" y1="16" x2="12.01" y2="16" />
+                            </svg>
+                            Objects Requiring Attention ({failedObjects.length})
+                          </h5>
+                          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
+                            The following objects failed to translate, deploy, or validate successfully:
+                          </p>
+                          <div style={{ maxHeight: '250px', overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
+                            <table className="object-counts-table" style={{ margin: 0 }}>
+                              <thead>
+                                <tr>
+                                  <th>Type</th>
+                                  <th>Schema</th>
+                                  <th>Name</th>
+                                  <th>Failure Reason / Error</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {failedObjects.map((item, idx) => (
+                                  <tr key={idx}>
+                                    <td><span className="status-badge failed">{item.type}</span></td>
+                                    <td><code>{item.schema}</code></td>
+                                    <td><code>{item.name}</code></td>
+                                    <td style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', textAlign: 'left' }}>
+                                      {item.error ? <code>{item.error}</code> : <span style={{ color: 'var(--text-secondary)' }}>Unknown error / skipped</span>}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
 
