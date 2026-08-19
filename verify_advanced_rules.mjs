@@ -113,7 +113,8 @@ assert(
 );
 
 // Verify broken dependency / missing object reference warning
-const brokenDep = report.warnings.find(w => w.description.includes("Broken Dependency / Missing Object"));
+const brokenDep = report.warnings.find(w => w.description.includes("Broken Dependency / Missing Object")) ||
+                  report.errors.find(e => e.description.includes("Broken Dependency / Missing Table or View"));
 assert(
   brokenDep !== undefined,
   'Validation Engine flags broken dependencies (missing nonexistent_table).'

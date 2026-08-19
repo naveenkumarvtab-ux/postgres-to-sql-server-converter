@@ -188,6 +188,7 @@ export default function SettingsPanel({ isOpen, onClose, settings, onUpdateSetti
               >
                 <option value="migration">Migration Mode (DROP + CREATE)</option>
                 <option value="deployment">Deployment Mode (Preserve Existing)</option>
+                <option value="view_only">Oracle View-Only Test Mode</option>
               </select>
               <span className="helper-text" style={{ display: 'block', marginTop: '0.25rem', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
                 Migration Mode drops and recreates tables/indexes. Deployment Mode skips creating them if they already exist.

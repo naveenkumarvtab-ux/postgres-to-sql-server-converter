@@ -127,6 +127,15 @@ const deployObjects = async (pool, dbName, objects, onProgress) => {
     }
     
     try {
+      const schema = obj.classified?.schema || 'dbo';
+      if (schema.toLowerCase() !== 'dbo' && schema.toLowerCase() !== 'sys') {
+        await pool.request().query(`
+          IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = '${schema}')
+          BEGIN
+            EXEC('CREATE SCHEMA [${schema}]')
+          END
+        `);
+      }
       const batches = tsql.split(/^\s*GO\s*$/gim).map(b => b.trim()).filter(b => b.length > 0);
       for (const batch of batches) {
         await pool.request().query(batch);
@@ -135,6 +144,8 @@ const deployObjects = async (pool, dbName, objects, onProgress) => {
         onProgress({ object: obj, objectType: type, status: 'success', current, total });
       }
     } catch (err) {
+      console.error(`DEPLOYMENT FAILURE for ${type} '${name}':`, err.message);
+      console.error(`FAILED T-SQL:\n${tsql}\n`);
       errors.push({ object: name, objectType: type, error: err.message });
       if (onProgress) {
         onProgress({ object: obj, objectType: type, status: 'error', error: err.message, current, total });

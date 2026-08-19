@@ -1,5 +1,5 @@
-import { cleanIdentifier, parseSchemaQualifiedName } from './parser.js';
-import { RESERVED_KEYWORDS, extractLocalScopeNames, resolveDeclaredSchema } from './validationHelpers.js';
+import { cleanIdentifier, parseSchemaQualifiedName, bracketIdentifier } from './parser.js';
+import { RESERVED_KEYWORDS, extractLocalScopeNames, resolveDeclaredSchema, isExcludedIdentifier } from './validationHelpers.js';
 
 const defaultTypeMap = {
   'smallint': 'SMALLINT',
@@ -120,8 +120,8 @@ export function mapDataType(pgType, useUnicode = true, dialect = 'postgres') {
     if (typeToCheck.startsWith('bigint')) {
       const isUnsigned = typeToCheck.includes('unsigned');
       if (isUnsigned) {
-        result.mappedType = 'BIGINT';
-        result.warning = `MySQL 'BIGINT UNSIGNED' mapped to 'BIGINT' to preserve compatibility with auto-increment primary keys and foreign keys.`;
+        result.mappedType = 'DECIMAL(20,0)';
+        result.warning = `MySQL 'BIGINT UNSIGNED' widened to 'DECIMAL(20,0)' to accommodate the full range (0 to 18.44 quintillion) without overflow.`;
       } else {
         result.mappedType = 'BIGINT';
       }
@@ -523,9 +523,7 @@ export function mapDefaultValue(pgDefault, mappedType, useUnicode = true) {
  * Helper to escape names into SQL Server [schema].[name] or [name] format
  */
 export function escapeTsqlName(fullName) {
-  if (!fullName) return '';
-  const parts = fullName.split('.');
-  return parts.map(part => `[${cleanIdentifier(part)}]`).join('.');
+  return bracketIdentifier(fullName);
 }
 
 /**
@@ -535,7 +533,7 @@ export function escapeTsqlColumnList(colList) {
   if (!colList) return '';
   return colList
     .split(',')
-    .map(col => `[${cleanIdentifier(col)}]`)
+    .map(col => bracketIdentifier(col.trim()))
     .join(', ');
 }
 
@@ -550,6 +548,13 @@ export function translateTsqlCheckExpression(expr, warnings = []) {
   
   // Clean quotes to square brackets
   cleanExpr = cleanExpr.replace(/"([^"]+)"/g, '[$1]');
+  
+  // Translate Oracle's 'IS JSON' check constraint to SQL Server's ISJSON() function check
+  cleanExpr = cleanExpr.replace(/([a-zA-Z0-9_.\[\]]+)\s+IS\s+JSON/gi, 'ISJSON($1) = 1');
+  
+  // Strip DEFERRABLE options
+  cleanExpr = cleanExpr.replace(/\bDEFERRABLE(?:\s+INITIALLY\s+(?:DEFERRED|IMMEDIATE))?\b/gi, '').trim();
+  cleanExpr = cleanExpr.replace(/\bNOT\s+DEFERRABLE\b/gi, '').trim();
   
   const regexOperatorPattern = /([^\s(]+|[^\s(]+\([^)]+\))\s*(!~|!~\*|~|~\*|SIMILAR\s+TO|NOT\s+SIMILAR\s+TO)\s*'([^']+)'/gi;
   
@@ -681,7 +686,7 @@ export function wrapBooleanExpressionInCase(expr) {
 }
 
 export function translateColumn(colObj, useUnicode = true, enums = null, domains = null, composites = null, dialect = 'postgres') {
-  const nameEsc = `[${colObj.name}]`;
+  const nameEsc = bracketIdentifier(colObj.name);
   
   if (colObj.isComputed) {
     // Replace PostgreSQL/MySQL identifier quotes/backticks with SQL Server square brackets inside the expression
@@ -864,6 +869,14 @@ export function translateColumn(colObj, useUnicode = true, enums = null, domains
  */
 export function translateTableConstraint(constraintText, warnings = null) {
   let cleanConst = constraintText.trim();
+  
+  // Strip all variations of DEFERRABLE / INITIALLY DEFERRED
+  cleanConst = cleanConst.replace(/\bDEFERRABLE(?:\s+INITIALLY\s+(?:DEFERRED|IMMEDIATE))?\b/gi, '');
+  cleanConst = cleanConst.replace(/\bINITIALLY\s+(?:DEFERRED|IMMEDIATE)(?:\s+DEFERRABLE)?\b/gi, '');
+  cleanConst = cleanConst.replace(/\bNOT\s+DEFERRABLE\b/gi, '');
+  cleanConst = cleanConst.replace(/\bDEFERRABLE\b/gi, '');
+  cleanConst = cleanConst.replace(/\s+/g, ' ').trim();
+  
   const upperConst = cleanConst.toUpperCase();
 
   // Strip trailing commas and semicolons if present
@@ -894,7 +907,12 @@ export function translateTableConstraint(constraintText, warnings = null) {
         const localCols = escapeTsqlColumnList(fkMatch[1]);
         const parentTable = escapeTsqlName(fkMatch[2]);
         const parentCols = escapeTsqlColumnList(fkMatch[3]);
-        const extra = fkMatch[4] || '';
+        let extra = fkMatch[4] || '';
+        extra = extra.replace(/\bDEFERRABLE(?:\s+INITIALLY\s+(?:DEFERRED|IMMEDIATE))?\b/gi, '');
+        extra = extra.replace(/\bINITIALLY\s+(?:DEFERRED|IMMEDIATE)(?:\s+DEFERRABLE)?\b/gi, '');
+        extra = extra.replace(/\bNOT\s+DEFERRABLE\b/gi, '');
+        extra = extra.replace(/\bDEFERRABLE\b/gi, '').trim();
+        if (extra) extra = ' ' + extra;
         translatedBody = `(${localCols}) REFERENCES ${parentTable}(${parentCols})${extra}`;
       }
     } else if (constType === 'CHECK') {
@@ -916,7 +934,7 @@ export function translateTableConstraint(constraintText, warnings = null) {
       return msg;
     }
 
-    return `CONSTRAINT [${constName}] ${constType} ${translatedBody}`;
+    return `CONSTRAINT ${bracketIdentifier(constName)} ${constType} ${translatedBody}`;
   }
 
   if (upperConst.startsWith('EXCLUDE') || upperConst.includes('EXCLUDE USING')) {
@@ -941,7 +959,12 @@ export function translateTableConstraint(constraintText, warnings = null) {
       const localCols = escapeTsqlColumnList(fkMatch[1]);
       const parentTable = escapeTsqlName(fkMatch[2]);
       const parentCols = escapeTsqlColumnList(fkMatch[3]);
-      const extra = fkMatch[4] || '';
+      let extra = fkMatch[4] || '';
+      extra = extra.replace(/\bDEFERRABLE(?:\s+INITIALLY\s+(?:DEFERRED|IMMEDIATE))?\b/gi, '');
+      extra = extra.replace(/\bINITIALLY\s+(?:DEFERRED|IMMEDIATE)(?:\s+DEFERRABLE)?\b/gi, '');
+      extra = extra.replace(/\bNOT\s+DEFERRABLE\b/gi, '');
+      extra = extra.replace(/\bDEFERRABLE\b/gi, '').trim();
+      if (extra) extra = ' ' + extra;
       return `FOREIGN KEY (${localCols}) REFERENCES ${parentTable}(${parentCols})${extra}`;
     }
   }
@@ -969,12 +992,38 @@ export function translateTableConstraint(constraintText, warnings = null) {
  * Automagically translates classified objects into T-SQL.
  * PL/pgSQL objects will be returned with a tag indicating they require AI translation.
  */
+export function hasOracleDbLink(tsql) {
+  if (!tsql) return null;
+  const dblinkRegex = /@([a-zA-Z0-9_]+)/g;
+  let dblinkMatch;
+  while ((dblinkMatch = dblinkRegex.exec(tsql)) !== null) {
+    const linkName = dblinkMatch[1];
+    if (['p_', 'v_', 'l_', 'i_', 'o_'].some(prefix => linkName.toLowerCase().startsWith(prefix))) continue;
+    if (/^[a-z]/.test(linkName) && linkName.length < 20) continue;
+    if (/[A-Z]/.test(linkName) && (linkName.includes('_') || linkName.length > 4)) {
+      return linkName;
+    }
+  }
+  return null;
+}
+
 export function translateObject(obj, useUnicode = true, metadata = null, enums = null, domains = null, composites = null, schemaMap = { 'public': 'dbo' }, tableColumnsMap = {}, deploymentMode = 'migration', sqlServerVersion = '2017+', dialect = 'postgres', metadataRepository = null) {
   const result = {
     tsql: '',
     warnings: [],
     requiresAi: false
   };
+
+  const dblinkName = hasOracleDbLink(obj.raw);
+  if (dblinkName) {
+    result.tsql = `-- ⚠️ NOT CONVERTED — MANUAL REVIEW REQUIRED: Oracle Database Link '@${dblinkName}' reference detected.\n` +
+                  `-- SQL Server uses LINKED SERVERs (sp_addlinkedserver) instead of DB Links.\n` +
+                  `-- Rewrite using four-part naming ([linked_server].[database].[schema].[table]) or OPENQUERY() syntax.\n\n` +
+                  `/* ORIGINAL ORACLE CODE:\n${obj.raw}\n*/`;
+    result.warnings.push(`Oracle Database Link Reference '@${dblinkName}' detected. Requires manual linked-server setup.`);
+    result.requiresAi = true;
+    return result;
+  }
 
   const dialectName = dialect === 'oracle' ? 'Oracle SQL' : dialect === 'mysql' ? 'MySQL' : 'PostgreSQL';
   const plDialectName = dialect === 'oracle' ? 'Oracle PL/SQL' : dialect === 'mysql' ? 'MySQL' : 'PL/pgSQL';
@@ -1056,13 +1105,34 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
                       `${colsTsql.join(',\n')}\n` +
                       `);\nGO`;
       } else if (deploymentMode === 'deployment') {
-        result.tsql = `IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[${obj.schema}].[${obj.name}]') AND type in (N'U'))\nBEGIN\n    CREATE TABLE [${obj.schema}].[${obj.name}] (\n    ${colsTsql.join(',\n    ')}\n    );\nEND\nGO`;
+        result.tsql = `IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'${bracketIdentifier((obj.schema || 'dbo') + '.' + obj.name)}') AND type in (N'U'))\nBEGIN\n    CREATE TABLE ${bracketIdentifier((obj.schema || 'dbo') + '.' + obj.name)} (\n    ${colsTsql.join(',\n    ')}\n    );\nEND\nGO`;
       } else {
-        result.tsql = `DROP TABLE IF EXISTS [${obj.schema}].[${obj.name}];\nGO\nCREATE TABLE [${obj.schema}].[${obj.name}] (\n${colsTsql.join(',\n')}\n);\nGO`;
+        result.tsql = `DROP TABLE IF EXISTS ${bracketIdentifier((obj.schema || 'dbo') + '.' + obj.name)};\nGO\nCREATE TABLE ${bracketIdentifier((obj.schema || 'dbo') + '.' + obj.name)} (\n${colsTsql.join(',\n')}\n);\nGO`;
       }
 
-      // Do NOT generate triggers automatically for ON UPDATE CURRENT_TIMESTAMP columns.
-      // This ensures we do not invent extra triggers unless explicitly present in the source SQL.
+      // MySQL auto-update trigger for ON UPDATE CURRENT_TIMESTAMP columns
+      if (dialect === 'mysql' && obj.parsed.columns) {
+        const onUpdateCols = obj.parsed.columns.filter(c => c.onUpdateExpr && c.onUpdateExpr.toUpperCase().includes('CURRENT_TIMESTAMP'));
+        if (onUpdateCols.length > 0) {
+          const pkCol = obj.parsed.columns.find(c => c.primaryKey) || obj.parsed.columns[0];
+          const pkName = pkCol ? pkCol.name : 'id';
+          onUpdateCols.forEach(col => {
+            const triggerName = `trg_${obj.name}_${col.name}`;
+            const triggerTsql = `\nCREATE OR ALTER TRIGGER ${bracketIdentifier((obj.schema || 'dbo') + '.' + triggerName)}\n` +
+                                `ON ${bracketIdentifier((obj.schema || 'dbo') + '.' + obj.name)}\n` +
+                                `AFTER UPDATE\n` +
+                                `AS\n` +
+                                `BEGIN\n` +
+                                `    UPDATE ${bracketIdentifier((obj.schema || 'dbo') + '.' + obj.name)}\n` +
+                                `    SET [${col.name}] = CURRENT_TIMESTAMP\n` +
+                                `    FROM ${bracketIdentifier((obj.schema || 'dbo') + '.' + obj.name)} t\n` +
+                                `    JOIN inserted i ON t.[${pkName}] = i.[${pkName}];\n` +
+                                `END;\n` +
+                                `GO`;
+            result.tsql += triggerTsql;
+          });
+        }
+      }
 
       validateTableTsql(result.tsql, obj.name, result.warnings);
       break;
@@ -1131,6 +1201,25 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
       
       for (let colTerm of colsList) {
         colTerm = colTerm.trim();
+        // Remove surrounding outer parentheses from the column term if any (e.g. ((lower(col))) -> lower(col))
+        while (colTerm.startsWith('(') && colTerm.endsWith(')')) {
+          colTerm = colTerm.substring(1, colTerm.length - 1).trim();
+        }
+        
+        let dir = '';
+        if (colTerm.toUpperCase().endsWith(' DESC')) {
+          dir = ' DESC';
+          colTerm = colTerm.substring(0, colTerm.length - 5).trim();
+        } else if (colTerm.toUpperCase().endsWith(' ASC')) {
+          dir = ' ASC';
+          colTerm = colTerm.substring(0, colTerm.length - 4).trim();
+        }
+        
+        // Remove surrounding parentheses again after stripping direction modifier
+        while (colTerm.startsWith('(') && colTerm.endsWith(')')) {
+          colTerm = colTerm.substring(1, colTerm.length - 1).trim();
+        }
+        
         const funcMatch = colTerm.match(/^(LOWER|UPPER|TRIM|LTRIM|RTRIM)\s*\(\s*([^)]+)\s*\)/i);
         if (funcMatch) {
           const funcName = funcMatch[1].toUpperCase();
@@ -1146,10 +1235,10 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
             `GO`
           );
           
-          indexCols.push(`[${computedColName}]`);
+          indexCols.push(`[${computedColName}]${dir}`);
           result.warnings.push(`Index [${obj.name}] contains functional expression '${colTerm}'. Generated computed column '[${computedColName}]' on table ${tblEsc} and indexed that column instead.`);
         } else {
-          indexCols.push(`[${cleanIdentifier(colTerm)}]`);
+          indexCols.push(`${bracketIdentifier(colTerm)}${dir}`);
         }
       }
 
@@ -1166,10 +1255,15 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
       }
 
       const altersTsql = computedColAlters.length > 0 ? computedColAlters.join('\n') + '\n' : '';
+      let indexName = obj.name;
+      if (indexName.includes('.')) {
+        indexName = indexName.split('.').pop();
+      }
+      
       if (deploymentMode === 'deployment') {
-        result.tsql = `${altersTsql}IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = '${obj.name}' AND object_id = OBJECT_ID('${tblEsc}'))\nBEGIN\n    CREATE ${uniqueStr}INDEX [${obj.name}] ON ${tblEsc} (${indexCols.join(', ')})${filterStr};\nEND\nGO`;
+        result.tsql = `${altersTsql}IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = '${indexName}' AND object_id = OBJECT_ID('${tblEsc}'))\nBEGIN\n    CREATE ${uniqueStr}INDEX [${indexName}] ON ${tblEsc} (${indexCols.join(', ')})${filterStr};\nEND\nGO`;
       } else {
-        result.tsql = `${altersTsql}DROP INDEX IF EXISTS [${obj.name}] ON ${tblEsc};\nGO\nCREATE ${uniqueStr}INDEX [${obj.name}] ON ${tblEsc} (${indexCols.join(', ')})${filterStr};\nGO`;
+        result.tsql = `${altersTsql}DROP INDEX IF EXISTS [${indexName}] ON ${tblEsc};\nGO\nCREATE ${uniqueStr}INDEX [${indexName}] ON ${tblEsc} (${indexCols.join(', ')})${filterStr};\nGO`;
       }
       
       if (obj.parsed.using && obj.parsed.using.toLowerCase() !== 'btree') {
@@ -1207,13 +1301,20 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
 
     case 'VIEW': {
       if (obj.parsed.isMaterializedView) {
-        result.requiresAi = false;
-        result.tsql = `-- ⚠️ NOT CONVERTED — MANUAL REVIEW REQUIRED: ${dialect === 'oracle' ? 'Oracle' : 'PostgreSQL'} MATERIALIZED VIEW has no direct SQL Server equivalent.\n` +
-                      `-- Closest equivalent is a SCHEMABINDING view with a UNIQUE CLUSTERED INDEX ('indexed view'),\n` +
-                      `-- which has stricter rules (no outer joins, only deterministic aggregates, all referenced objects must use two-part names).\n` +
-                      `-- Recommended: manually redesign as an indexed view if requirements allow, or use a scheduled job to populate a real table instead.\n\n` +
-                      `/* ORIGINAL CODE:\n${obj.raw}\n*/`;
-        result.warnings.push(`Materialized View [${obj.schema}].[${obj.name}] is not converted. Materialized views have no direct T-SQL equivalent.`);
+        let cleanViewSql = obj.raw;
+        cleanViewSql = cleanViewSql.replace(/CREATE\s+(?:OR\s+REPLACE\s+)?MATERIALIZED\s+VIEW\s+([^\s;(]+)\s+AS/i, `CREATE OR ALTER VIEW [${obj.schema}].[${obj.name}] AS`);
+        
+        const errors = validateQueryDependencies(cleanViewSql, obj.name, obj.type, metadataRepository, schemaMap);
+        if (errors && errors.length > 0) {
+          result.requiresAi = true;
+          result.tsql = `-- ERROR: [Validation Failure] Materialized View cannot compile due to missing objects/columns:\n` +
+                        errors.map(e => `-- - ${e}`).join('\n') + `\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+          result.warnings.push(...errors);
+        } else {
+          result.requiresAi = true;
+          result.tsql = `-- PENDING AI TRANSLATION --\n-- Converted from PostgreSQL MATERIALIZED VIEW to standard T-SQL View.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL CODE:\n${cleanViewSql}\n*/`;
+          result.warnings.push(`Materialized View '${obj.name}' converted to standard view, requires AI translation.`);
+        }
         break;
       }
 
@@ -1233,6 +1334,14 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
         result.tsql = tsql;
         result.requiresAi = false;
         result.warnings.push(`Successfully compiled MySQL View to T-SQL view.`);
+        break;
+      }
+
+      if (dialect === 'oracle') {
+        const tsql = convertOracleViewToTsql(obj.raw, obj.schema, obj.name);
+        result.tsql = tsql;
+        result.requiresAi = false;
+        result.warnings.push(`Successfully compiled Oracle View to T-SQL view.`);
         break;
       }
 
@@ -2567,22 +2676,7 @@ export function validateQueryDependencies(sql, objName, objType, metadataReposit
 
   uniqueTokens.forEach(token => {
     const lowerToken = token.toLowerCase();
-    if (RESERVED_KEYWORDS.has(lowerToken) || localScopeNames.has(lowerToken)) {
-      return;
-    }
-    
-    // Skip current object name, declared schemas, tables, views, functions, procedures
-    const isDeclaredTable = Object.keys(metadataRepository.tables).some(k => k.toLowerCase() === lowerToken || k.toLowerCase().endsWith('.' + lowerToken)) || metadataRepository.tables[lowerToken];
-    const isDeclaredView = [...metadataRepository.views].some(k => k.toLowerCase() === lowerToken || k.toLowerCase().endsWith('.' + lowerToken)) || metadataRepository.views.has(lowerToken);
-    
-    if (
-      lowerToken === objName.toLowerCase() ||
-      declaredSchemas.has(lowerToken) ||
-      isDeclaredTable ||
-      isDeclaredView ||
-      metadataRepository.functions.has(lowerToken) ||
-      metadataRepository.procedures.has(lowerToken)
-    ) {
+    if (isExcludedIdentifier(token, localScopeNames, declaredSchemas, metadataRepository, objName)) {
       return;
     }
 
@@ -2632,5 +2726,95 @@ function convertJsonObject(tsql) {
     }
     return `(SELECT ${selectPairs.join(', ')} FOR JSON PATH, WITHOUT_ARRAY_WRAPPER)`;
   });
+}
+
+function convertOracleDecode(sql) {
+  return sql.replace(/DECODE\s*\(\s*([^,]+)\s*,\s*([\s\S]+?)\)/gi, (match, val, body) => {
+    const args = body.split(',').map(s => s.trim());
+    const cases = [];
+    for (let i = 0; i < args.length - 1; i += 2) {
+      cases.push(`WHEN ${args[i]} THEN ${args[i+1]}`);
+    }
+    const defVal = args.length % 2 === 1 ? args[args.length - 1] : 'NULL';
+    return `CASE ${val} ${cases.join(' ')} ELSE ${defVal} END`;
+  });
+}
+
+function convertOracleRownum(sql) {
+  let limit = null;
+  const rownumMatch = sql.match(/ROWNUM\s*<=\s*(\d+)/i);
+  if (rownumMatch) {
+    limit = rownumMatch[1];
+    sql = sql.replace(/WHERE\s+ROWNUM\s*<=\s*\d+/i, '');
+    sql = sql.replace(/AND\s+ROWNUM\s*<=\s*\d+/i, '');
+    sql = sql.replace(/ROWNUM\s*<=\s*\d+\s+AND/i, '');
+  }
+  if (limit) {
+    sql = sql.replace(/SELECT\s+/i, `SELECT TOP ${limit} `);
+  }
+  return sql;
+}
+
+function convertOracleTrunc(sql) {
+  sql = sql.replace(/TRUNC\s*\(\s*([^,]+)\s*,\s*'(?:MM|MONTH|MON)'\s*\)/gi, "DATEADD(month, DATEDIFF(month, 0, $1), 0)");
+  sql = sql.replace(/TRUNC\s*\(\s*([^,)]+)\s*\)/gi, "CAST($1 AS DATE)");
+  return sql;
+}
+
+function convertOracleToChar(sql) {
+  return sql.replace(/TO_CHAR\s*\(\s*([^,]+)\s*,\s*'([^']+)'\s*\)/gi, (match, expr, fmt) => {
+    const upperFmt = fmt.toUpperCase().trim();
+    if (upperFmt === 'YYYY-MM-DD') return `CONVERT(varchar(10), ${expr}, 23)`;
+    if (upperFmt === 'YYYY-MM-DD HH24:MI:SS') return `CONVERT(varchar(19), ${expr}, 120)`;
+    if (upperFmt === 'YYYYMMDD') return `CONVERT(varchar(8), ${expr}, 112)`;
+    if (upperFmt === 'HH24:MI:SS') return `CONVERT(varchar(8), ${expr}, 108)`;
+    if (upperFmt === 'YYYY') return `FORMAT(${expr}, 'yyyy')`;
+    if (upperFmt === 'MM') return `FORMAT(${expr}, 'MM')`;
+    if (upperFmt.match(/^[90,.$]+$/)) {
+      const tsqlFmt = upperFmt.replace(/9/g, '#');
+      return `FORMAT(${expr}, '${tsqlFmt}')`;
+    }
+    return `CONVERT(varchar(255), ${expr})`;
+  });
+}
+
+function convertOracleToDate(sql) {
+  return sql.replace(/TO_DATE\s*\(\s*([^,]+)\s*,\s*'([^']+)'\s*\)/gi, (match, expr, fmt) => {
+    const upperFmt = fmt.toUpperCase().trim();
+    if (upperFmt === 'YYYY-MM-DD') return `CONVERT(date, ${expr}, 23)`;
+    if (upperFmt === 'YYYY-MM-DD HH24:MI:SS') return `CONVERT(datetime, ${expr}, 120)`;
+    return `CAST(${expr} AS DATE)`;
+  });
+}
+
+export function convertOracleViewToTsql(sql, schemaName, viewName) {
+  let tsql = sql;
+  
+  // Format CREATE VIEW statement
+  tsql = tsql.replace(/CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+([a-zA-Z0-9_.]+)\s+AS/i, (match, fullViewName) => {
+    const parts = fullViewName.split('.');
+    const bracketedName = parts.map(p => `[${p.trim()}]`).join('.');
+    return `CREATE OR ALTER VIEW ${bracketedName} AS`;
+  });
+  
+  // Basic functions
+  tsql = tsql.replace(/NVL\s*\(/gi, 'ISNULL(');
+  tsql = tsql.replace(/LISTAGG\s*\(/gi, 'STRING_AGG(');
+  
+  // Decoding, truncating, rownum limiting
+  tsql = convertOracleDecode(tsql);
+  tsql = convertOracleTrunc(tsql);
+  tsql = convertOracleRownum(tsql);
+  tsql = convertOracleToChar(tsql);
+  tsql = convertOracleToDate(tsql);
+  
+  // Bracket schema/tables: e.g. FIN.T_FIN_004 -> [FIN].[T_FIN_004]
+  tsql = tsql.replace(/\b(FIN|HR|ETL|CRM|AUDIT|SALES|INV|SHOP)\.([a-zA-Z0-9_]+)\b/gi, '[$1].[$2]');
+  
+  if (!tsql.trim().endsWith('GO')) {
+    tsql = tsql.trim() + '\nGO';
+  }
+  
+  return tsql;
 }
 

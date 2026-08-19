@@ -3,6 +3,8 @@ import React, { useState } from 'react';
 export default function SqlServerConfig({ config, onUpdateConfig }) {
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
+  const [isPruning, setIsPruning] = useState(false);
+  const [pruneResult, setPruneResult] = useState(null);
 
   const handleChange = (field, value) => {
     onUpdateConfig({ ...config, [field]: value });
@@ -40,6 +42,26 @@ export default function SqlServerConfig({ config, onUpdateConfig }) {
       onUpdateConfig({ ...config, isConnected: false, serverInfo: null });
     } finally {
       setIsTesting(false);
+    }
+  };
+
+  const handlePruneDatabases = async () => {
+    if (!window.confirm("Are you sure you want to drop all temporary 'Migration_' databases from this SQL Server?")) {
+      return;
+    }
+    setIsPruning(true);
+    setPruneResult(null);
+    try {
+      const response = await fetch(getApiUrl('/api/connection/cleanup-all'), {
+        method: 'POST'
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Pruning failed');
+      setPruneResult({ success: true, message: data.message });
+    } catch (err) {
+      setPruneResult({ success: false, message: err.message || 'Pruning failed' });
+    } finally {
+      setIsPruning(false);
     }
   };
 
@@ -174,14 +196,25 @@ export default function SqlServerConfig({ config, onUpdateConfig }) {
           )}
         </div>
         
-        <button 
-          className="btn btn-secondary" 
-          onClick={handleTestConnection}
-          disabled={isTesting}
-          style={{ padding: '0.5rem 1rem', fontSize: '0.85rem' }}
-        >
-          {isTesting ? 'Testing...' : 'Test Connection'}
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button 
+            className="btn btn-secondary" 
+            onClick={handlePruneDatabases}
+            disabled={isPruning}
+            style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', color: 'var(--error)', borderColor: 'rgba(239, 68, 68, 0.4)' }}
+          >
+            {isPruning ? 'Pruning...' : 'Prune Temp Databases'}
+          </button>
+          
+          <button 
+            className="btn btn-secondary" 
+            onClick={handleTestConnection}
+            disabled={isTesting}
+            style={{ padding: '0.5rem 1rem', fontSize: '0.85rem' }}
+          >
+            {isTesting ? 'Testing...' : 'Test Connection'}
+          </button>
+        </div>
       </div>
 
       {testResult && (
@@ -190,11 +223,25 @@ export default function SqlServerConfig({ config, onUpdateConfig }) {
           padding: '0.75rem', 
           borderRadius: 'var(--radius-sm)', 
           fontSize: '0.85rem',
-          background: testResult.success ? 'var(--success-bg)' : 'var(--error-bg)',
-          color: testResult.success ? 'var(--success)' : 'var(--error)',
-          border: `1px solid ${testResult.success ? 'var(--success-border)' : 'var(--error-border)'}`
+          background: testResult.success ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+          color: testResult.success ? '#10b981' : '#ef4444',
+          border: `1px solid ${testResult.success ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)'}`
         }}>
           {testResult.message}
+        </div>
+      )}
+
+      {pruneResult && (
+        <div style={{ 
+          marginTop: '1rem', 
+          padding: '0.75rem', 
+          borderRadius: 'var(--radius-sm)', 
+          fontSize: '0.85rem',
+          background: pruneResult.success ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+          color: pruneResult.success ? '#10b981' : '#ef4444',
+          border: `1px solid ${pruneResult.success ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)'}`
+        }}>
+          {pruneResult.message}
         </div>
       )}
     </div>

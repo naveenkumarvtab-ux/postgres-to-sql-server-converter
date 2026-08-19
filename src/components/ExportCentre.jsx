@@ -78,99 +78,172 @@ export default function ExportCentre({
 
   const categoryOrder = ['SCHEMA', 'EXTENSION', 'ENUM', 'DOMAIN', 'COMPOSITE', 'SEQUENCE', 'TABLE', 'CONSTRAINT', 'INDEX', 'VIEW', 'FUNCTION', 'PROCEDURE', 'TRIGGER', 'DATA', 'OTHER'];
 
-  const getObjectStatusAndError = (obj) => {
-    const name = obj.classified.name;
+  const getDetailedObjectStatus = (obj) => {
+    let name = obj.classified.name;
+    if (name.includes('.')) {
+      name = name.split('.').pop();
+    }
     const schema = obj.classified.schema || 'dbo';
     const type = obj.classified.type;
     const fullName = `${schema}.${name}`.toLowerCase();
 
-    if (deployResults?.errors) {
-      const deployErr = deployResults.errors.find(
-        e => e.object?.toLowerCase() === fullName || e.object?.toLowerCase() === name.toLowerCase()
-      );
-      if (deployErr) {
-        return { status: 'Failed', error: deployErr.error };
-      }
-    }
-
-    if (compileResults?.compilationErrors) {
-      const compileErr = compileResults.compilationErrors.find(
-        e => e.object?.toLowerCase() === fullName || e.object?.toLowerCase() === name.toLowerCase()
-      );
-      if (compileErr) {
-        return { status: 'Failed', error: compileErr.error };
-      }
-    }
-
-    if (compileResults?.unresolvedDependencies) {
-      const depErr = compileResults.unresolvedDependencies.find(
-        e => e.object?.toLowerCase() === fullName || e.object?.toLowerCase() === name.toLowerCase()
-      );
-      if (depErr) {
-        return { status: 'Failed', error: `Unresolved dependency: ${depErr.dependency}` };
-      }
-    }
-
-    if (compileResults?.deployedObjects) {
-      const categoryMap = {
-        SCHEMA: 'schemas',
-        TABLE: 'tables',
-        VIEW: 'views',
-        PROCEDURE: 'procedures',
-        FUNCTION: 'functions',
-        TRIGGER: 'triggers',
-        CONSTRAINT: 'constraints',
-        INDEX: 'indexes'
-      };
-      const listKey = categoryMap[type];
-      if (listKey) {
-        const foundList = compileResults.deployedObjects[listKey];
-        if (foundList) {
-          const isCreated = foundList.some(n => {
-            if (!n) return false;
-            const nName = typeof n === 'string' ? n : (n.name || '');
-            const nSchema = typeof n === 'string' ? 'dbo' : (n.schema || 'dbo');
-            
-            if (typeof n === 'string' && n.includes('.')) {
-              const parts = n.split('.');
-              return parts[1].toLowerCase() === name.toLowerCase() && parts[0].toLowerCase() === schema.toLowerCase();
-            }
-            
-            if (type === 'SCHEMA') {
-              return nName.toLowerCase() === name.toLowerCase();
-            }
-            
-            return nName.toLowerCase() === name.toLowerCase() && nSchema.toLowerCase() === schema.toLowerCase();
-          });
-          if (isCreated) {
-            return { status: 'Verified', error: null };
-          }
-        }
-      } else {
-        if (deployResults?.successes) {
-          const isDeplSuccess = deployResults.successes.some(
-            s => s.name?.toLowerCase() === name.toLowerCase() && (s.schema || 'dbo').toLowerCase() === schema.toLowerCase()
-          );
-          if (isDeplSuccess) {
-            return { status: 'Verified', error: null };
-          }
-        }
-      }
-    } else {
-      if (deployResults?.successes) {
-        const isDeplSuccess = deployResults.successes.some(
-          s => s.name?.toLowerCase() === name.toLowerCase() && (s.schema || 'dbo').toLowerCase() === schema.toLowerCase()
-        );
-        if (isDeplSuccess) {
-          return { status: 'Verified', error: null };
-        }
-      }
-    }
+    // 1. Translation status
+    let translation = 'SUCCESS';
+    let translationCategory = 'SUCCESS';
+    let translationError = null;
 
     if (obj.translation.requiresAi && !settings.apiKey) {
-      return { status: 'Skipped', error: 'Skipped: Requires AI key for translation' };
+      translation = 'PENDING';
+      translationCategory = 'SKIPPED_BY_RULE';
+      translationError = 'Skipped: Requires AI key for translation';
+    } else if (obj.translation.requiresAi) {
+      if (!obj.translation.tsql || obj.translation.tsql.includes('PENDING AI TRANSLATION')) {
+        translation = 'FAILED';
+        translationCategory = 'AI_EMPTY_RESPONSE';
+        translationError = 'Gemini returned empty or placeholder response';
+      }
+    } else if (obj.translation.tsql && obj.translation.tsql.includes('-- ERROR')) {
+      translation = 'FAILED';
+      translationCategory = 'TRANSLATION_ERROR';
+      translationError = 'SQL translation contains conversion errors';
     }
-    return { status: 'Skipped', error: 'Skipped or bypassed during deployment' };
+
+    // 2. Deployment status
+    let deployment = 'PENDING';
+    let deploymentCategory = 'PENDING';
+    let deploymentError = null;
+
+    if (deployResults) {
+      if (translation === 'FAILED') {
+        deployment = 'FAILED';
+        deploymentCategory = 'SKIPPED_AFTER_PREVIOUS_FAILURE';
+        deploymentError = 'Skipped deployment due to translation failure';
+      } else {
+        const deployErr = deployResults.errors?.find(
+          e => e.object?.toLowerCase() === fullName || e.object?.toLowerCase() === name.toLowerCase()
+        );
+        if (deployErr) {
+          deployment = 'FAILED';
+          const isDep = deployErr.error.toLowerCase().includes('invalid object name') || deployErr.error.toLowerCase().includes('could not find');
+          deploymentCategory = isDep ? 'MISSING_DEPENDENCY' : 'SQL_EXECUTION_ERROR';
+          deploymentError = deployErr.error;
+        } else {
+          deployment = 'SUCCESS';
+          deploymentCategory = 'SUCCESS';
+        }
+      }
+    }
+
+    // 3. Validation status
+    let validation = 'PENDING';
+    let validationCategory = 'PENDING';
+    let validationError = null;
+
+    if (compileResults) {
+      if (deployment === 'FAILED') {
+        validation = 'FAILED';
+        validationCategory = 'SKIPPED_AFTER_PREVIOUS_FAILURE';
+        validationError = 'Skipped validation due to deployment failure';
+      } else {
+        const compileErr = compileResults.compilationErrors?.find(
+          e => e.object?.toLowerCase() === fullName || e.object?.toLowerCase() === name.toLowerCase() || e.object?.toLowerCase() === `[${schema}].[${name}]`.toLowerCase()
+        );
+        const depErr = compileResults.unresolvedDependencies?.find(
+          e => e.object?.toLowerCase() === fullName || e.object?.toLowerCase() === name.toLowerCase() || e.object?.toLowerCase() === `${schema}.${name}`.toLowerCase()
+        );
+        
+        if (depErr) {
+          validation = 'FAILED';
+          validationCategory = 'MISSING_DEPENDENCY';
+          validationError = `Missing dependency: ${depErr.dependency}`;
+        } else if (compileErr) {
+          validation = 'FAILED';
+          const isDep = compileErr.error.toLowerCase().includes('invalid object name') || compileErr.error.toLowerCase().includes('could not find');
+          validationCategory = isDep ? 'MISSING_DEPENDENCY' : 'SQL_EXECUTION_ERROR';
+          validationError = compileErr.error;
+        } else {
+          const checkInList = (list) => {
+            if (!list) return false;
+            return list.some(n => {
+              if (!n) return false;
+              const nName = typeof n === 'string' ? n : (n.name || '');
+              const nSchema = typeof n === 'string' ? 'dbo' : (n.schema || 'dbo');
+              if (typeof n === 'string' && n.includes('.')) {
+                const parts = n.split('.');
+                return parts[1].toLowerCase() === name.toLowerCase() && parts[0].toLowerCase() === schema.toLowerCase();
+              }
+              if (type === 'SCHEMA') return nName.toLowerCase() === name.toLowerCase();
+              return nName.toLowerCase() === name.toLowerCase() && nSchema.toLowerCase() === schema.toLowerCase();
+            });
+          };
+
+          const categoryMap = {
+            SCHEMA: 'schemas',
+            TABLE: 'tables',
+            VIEW: 'views',
+            PROCEDURE: 'procedures',
+            FUNCTION: 'functions',
+            TRIGGER: 'triggers',
+            CONSTRAINT: 'constraints',
+            INDEX: 'indexes',
+            SEQUENCE: 'sequences'
+          };
+          const listKey = categoryMap[type];
+          let isCreated = false;
+          
+          if (listKey) {
+            isCreated = checkInList(compileResults.deployedObjects?.[listKey]);
+            if (!isCreated && (type === 'FUNCTION' || type === 'PROCEDURE')) {
+              const otherKey = type === 'FUNCTION' ? 'procedures' : 'functions';
+              isCreated = checkInList(compileResults.deployedObjects?.[otherKey]);
+            }
+          } else {
+            isCreated = true;
+          }
+
+          if (isCreated) {
+            validation = 'SUCCESS';
+            validationCategory = 'SUCCESS';
+          } else {
+            validation = 'FAILED';
+            validationCategory = 'UNKNOWN';
+            validationError = 'Object definition not found in SQL Server catalog';
+          }
+        }
+      }
+    }
+
+    // Unified summary status
+    let status = 'Skipped';
+    let error = null;
+    let category = 'SUCCESS';
+
+    if (translation === 'FAILED' || deployment === 'FAILED' || validation === 'FAILED') {
+      status = (validationCategory === 'MISSING_DEPENDENCY' || deploymentCategory === 'MISSING_DEPENDENCY') ? 'Dependency Missing' : 'Failed';
+      error = validationError || deploymentError || translationError;
+      category = validationCategory !== 'PENDING' ? validationCategory : (deploymentCategory !== 'PENDING' ? deploymentCategory : translationCategory);
+    } else if (translation === 'SUCCESS' && deployment === 'SUCCESS' && validation === 'SUCCESS') {
+      status = 'Verified';
+      category = 'SUCCESS';
+    } else {
+      status = 'Skipped';
+      category = translationCategory !== 'SUCCESS' ? translationCategory : 'PENDING';
+      error = translationError;
+    }
+
+    return {
+      translation,
+      deployment,
+      validation,
+      status,
+      error,
+      category
+    };
+  };
+
+  const getObjectStatusAndError = (obj) => {
+    const res = getDetailedObjectStatus(obj);
+    return { status: res.status, error: res.error };
   };
 
   const breakdownCategories = [
@@ -182,32 +255,42 @@ export default function ExportCentre({
     { label: 'Triggers', type: 'TRIGGER' },
     { label: 'Constraints & Keys', type: 'CONSTRAINT' },
     { label: 'Indexes', type: 'INDEX' },
-    { label: 'Sequences & Custom Types', type: 'SEQUENCE' }
+    { label: 'Sequences', type: 'SEQUENCE' },
+    { label: 'Custom Types/Domains/Enums', type: 'CUSTOM_TYPE' }
   ];
 
   const categoryStats = useMemo(() => {
     return breakdownCategories.map(cat => {
       let catObjects = [];
       if (cat.type === 'SEQUENCE') {
-        catObjects = objects.filter(o => ['SEQUENCE', 'ENUM', 'DOMAIN', 'COMPOSITE'].includes(o.classified.type));
+        catObjects = objects.filter(o => o.classified.type === 'SEQUENCE');
+      } else if (cat.type === 'CUSTOM_TYPE') {
+        catObjects = objects.filter(o => ['ENUM', 'DOMAIN', 'COMPOSITE'].includes(o.classified.type));
+      } else if (cat.type === 'FUNCTION') {
+        catObjects = objects.filter(o => o.classified.type === 'FUNCTION' && !o.classified.parsed?.returnsTrigger);
       } else {
         catObjects = objects.filter(o => o.classified.type === cat.type);
       }
+
 
       let migrated = 0;
       let failed = 0;
       let skipped = 0;
       const items = catObjects.map(obj => {
-        const { status, error } = getObjectStatusAndError(obj);
-        if (status === 'Verified') migrated++;
-        else if (status === 'Failed') failed++;
+        const detail = getDetailedObjectStatus(obj);
+        if (detail.status === 'Verified') migrated++;
+        else if (detail.status === 'Failed' || detail.status === 'Dependency Missing') failed++;
         else skipped++;
         return {
           id: obj.classified.id || `${obj.classified.schema}.${obj.classified.name}`,
           schema: obj.classified.schema || 'dbo',
           name: obj.classified.name,
-          status,
-          error
+          status: detail.status,
+          error: detail.error,
+          translation: detail.translation,
+          deployment: detail.deployment,
+          validation: detail.validation,
+          category: detail.category
         };
       });
 
@@ -215,21 +298,7 @@ export default function ExportCentre({
 
       let targetCount = 0;
       if (compileResults) {
-        const typeMap = {
-          TABLE: 'tables',
-          VIEW: 'views',
-          PROCEDURE: 'procedures',
-          FUNCTION: 'functions',
-          TRIGGER: 'triggers',
-          CONSTRAINT: 'constraints',
-          INDEX: 'indexes'
-        };
-        const key = typeMap[cat.type];
-        if (key) {
-          targetCount = compileResults.objectCounts?.[key] || 0;
-        } else {
-          targetCount = migrated;
-        }
+        targetCount = migrated;
       }
 
       const missing = Math.max(0, totalCount - targetCount);
@@ -268,6 +337,22 @@ export default function ExportCentre({
 
     return { source, migrated, failed, skipped, rate };
   }, [categoryStats]);
+
+  const firstDeploymentError = useMemo(() => {
+    if (deployResults?.errors && deployResults.errors.length > 0) {
+      const tblErr = deployResults.errors.find(e => e.objectType === 'TABLE');
+      if (tblErr) return { name: tblErr.object, type: 'TABLE', phase: 'Deployment', error: tblErr.error };
+      const otherErr = deployResults.errors[0];
+      return { name: otherErr.object, type: otherErr.objectType, phase: 'Deployment', error: otherErr.error };
+    }
+    if (compileResults?.compilationErrors && compileResults.compilationErrors.length > 0) {
+      const tblErr = compileResults.compilationErrors.find(e => e.objectType === 'TABLE');
+      if (tblErr) return { name: tblErr.object, type: 'TABLE', phase: 'Validation', error: tblErr.error };
+      const otherErr = compileResults.compilationErrors[0];
+      return { name: otherErr.object, type: otherErr.objectType, phase: 'Validation', error: otherErr.error };
+    }
+    return null;
+  }, [deployResults, compileResults]);
 
   const drillDownCat = useMemo(() => {
     if (!activeDrillDown) return null;
@@ -604,7 +689,8 @@ ${objectLogSection}`;
         FUNCTION: 'functions',
         TRIGGER: 'triggers',
         CONSTRAINT: 'constraints',
-        INDEX: 'indexes'
+        INDEX: 'indexes',
+        SEQUENCE: 'sequences'
       };
       
       Object.keys(categoryMap).forEach(type => {
@@ -845,15 +931,29 @@ ${objectLogSection}`;
   return (
     <div className="export-centre">
       {errorCount > 0 && (
-        <div className="hard-rule-banner glass-panel">
-          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none">
-            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-            <line x1="12" y1="9" x2="12" y2="13" />
-            <line x1="12" y1="17" x2="12.01" y2="17" />
-          </svg>
+        <div className={`hard-rule-banner glass-panel ${bypassErrors ? 'warning-banner' : ''}`} style={bypassErrors ? { borderLeftColor: 'var(--warning)', background: 'rgba(245, 158, 11, 0.05)' } : {}}>
+          {bypassErrors ? (
+            <svg viewBox="0 0 24 24" width="20" height="20" stroke="var(--warning)" strokeWidth="2" fill="none">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+          )}
           <div>
-            <strong style={{ display: 'block', fontSize: '1rem', marginBottom: '0.2rem' }}>Database export blocked</strong>
-            <span style={{ fontSize: '0.85rem' }}>Resolve all {errorCount} errors before generating .BAK</span>
+            <strong style={{ display: 'block', fontSize: '1rem', marginBottom: '0.2rem', color: bypassErrors ? 'var(--warning)' : 'var(--error)' }}>
+              {bypassErrors ? '⚠️ Database Deployment Override Active' : 'Database export blocked'}
+            </strong>
+            <span style={{ fontSize: '0.85rem' }}>
+              {bypassErrors 
+                ? `Proceeding with deployment despite ${errorCount} compilation/validation errors. Output .BAK will be watermarked as DRAFT.`
+                : `Resolve all ${errorCount} errors before generating .BAK`}
+            </span>
           </div>
         </div>
       )}
@@ -976,6 +1076,27 @@ ${objectLogSection}`;
                         </div>
                       </div>
 
+                      {firstDeploymentError && (
+                        <div className="hard-rule-banner glass-panel error-banner" style={{ borderLeftColor: 'var(--error)', background: 'rgba(239, 68, 68, 0.05)', marginBottom: '1.5rem', padding: '1rem', display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
+                          <svg viewBox="0 0 24 24" width="24" height="24" stroke="var(--error)" strokeWidth="2" fill="none" style={{ flexShrink: 0, marginTop: '0.2rem' }}>
+                            <circle cx="12" cy="12" r="10" />
+                            <line x1="12" y1="8" x2="12" y2="12" />
+                            <line x1="12" y1="16" x2="12.01" y2="16" />
+                          </svg>
+                          <div>
+                            <strong style={{ display: 'block', fontSize: '1.05rem', color: 'var(--error)', marginBottom: '0.25rem' }}>
+                              Critical {firstDeploymentError.phase} Error in {firstDeploymentError.type}: [ {firstDeploymentError.name} ]
+                            </strong>
+                            <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', fontFamily: 'monospace', display: 'block', wordBreak: 'break-all' }}>
+                              {firstDeploymentError.error}
+                            </span>
+                            <small style={{ display: 'block', marginTop: '0.5rem', color: 'var(--text-secondary)' }}>
+                              ⚠️ This failure likely caused downstream views, programmable objects, and foreign keys to fail due to missing dependencies.
+                            </small>
+                          </div>
+                        </div>
+                      )}
+
                       {!activeDrillDown ? (
                         <div className="breakdown-table-container">
                           <h5>Object Type Breakdown</h5>
@@ -1044,7 +1165,10 @@ ${objectLogSection}`;
                                 <tr>
                                   <th>Schema</th>
                                   <th>Object Name</th>
-                                  <th>Status</th>
+                                  <th>Translation</th>
+                                  <th>Deployment</th>
+                                  <th>Validation</th>
+                                  <th>Category</th>
                                   <th>Error / Reason</th>
                                 </tr>
                               </thead>
@@ -1054,9 +1178,24 @@ ${objectLogSection}`;
                                     <td><code>{item.schema}</code></td>
                                     <td><code>{item.name}</code></td>
                                     <td>
-                                      <span className={`status-badge ${item.status.toLowerCase()}`}>
-                                        {item.status}
+                                      <span className={`status-badge ${item.translation.toLowerCase()}`}>
+                                        {item.translation}
                                       </span>
+                                    </td>
+                                    <td>
+                                      <span className={`status-badge ${item.deployment.toLowerCase()}`}>
+                                        {item.deployment}
+                                      </span>
+                                    </td>
+                                    <td>
+                                      <span className={`status-badge ${item.validation.toLowerCase().replace(/\s+/g, '-')}`}>
+                                        {item.validation}
+                                      </span>
+                                    </td>
+                                    <td>
+                                      <code style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                                        {item.category}
+                                      </code>
                                     </td>
                                     <td className="error-cell-text" style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                                       {item.error ? <code>{item.error}</code> : <span style={{ color: 'var(--success)' }}>✓ OK</span>}

@@ -1343,3 +1343,17 @@ export function buildSchemaMap(classifiedStatements, preserveSchema) {
   });
   return map;
 }
+
+export function bracketIdentifier(name) {
+  if (!name) return '';
+  const parts = name.split('.');
+  return parts.map(part => {
+    const trimmed = part.trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      return trimmed;
+    }
+    const cleaned = cleanIdentifier(trimmed);
+    return `[${cleaned}]`;
+  }).join('.');
+}
+

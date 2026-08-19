@@ -1,5 +1,5 @@
 import { cleanIdentifier } from './parser.js';
-import { RESERVED_KEYWORDS, extractLocalScopeNames, resolveDeclaredSchema } from './validationHelpers.js';
+import { RESERVED_KEYWORDS, extractLocalScopeNames, resolveDeclaredSchema, isExcludedIdentifier } from './validationHelpers.js';
 
 /**
  * Advanced Validation Engine for PostgreSQL to SQL Server T-SQL migration.
@@ -24,8 +24,16 @@ export function validateMigration(translatedObjects, sourceDialect = 'postgres')
   const tableColumns = {};
   
   for (const obj of translatedObjects) {
+    const isFailed = obj.requiresAi || (obj.tsql && (obj.tsql.includes('-- ERROR') || obj.tsql.includes('PENDING AI TRANSLATION')));
+    if (isFailed) {
+      continue;
+    }
+
     const schema = obj.schema ? obj.schema.toLowerCase() : 'dbo';
-    const name = obj.name.toLowerCase();
+    let name = obj.name.toLowerCase();
+    if (name.includes('.')) {
+      name = name.split('.').pop();
+    }
     const fullKey = `${schema}.${name}`;
     
     declaredSchemas.add(schema);
@@ -60,6 +68,10 @@ export function validateMigration(translatedObjects, sourceDialect = 'postgres')
 
   // Iterate and validate each translated object
   for (const obj of translatedObjects) {
+    const isFailed = obj.requiresAi || (obj.tsql && (obj.tsql.includes('-- ERROR') || obj.tsql.includes('PENDING AI TRANSLATION')));
+    if (isFailed) {
+      continue;
+    }
     const objLabel = `[${obj.schema}].[${obj.name}] (${obj.type})`;
     const tsql = obj.tsql || '';
     const cleanTsql = tsql.replace(/\/\*[\s\S]*?\*\//g, '').replace(/--.*/g, ''); // strip comments
@@ -300,8 +312,20 @@ export function validateMigration(translatedObjects, sourceDialect = 'postgres')
         const refKey = resolved.key;
 
         referencedTablesInQuery.push({ key: refKey, name: refName, full: fullRef });
+      }
 
-        // Validate references to actual tables/views
+      // If this is a CONSTRAINT, add the parent table to referencedTablesInQuery so columns inside check/foreign constraints are checked against the parent table columns
+      if (obj.type === 'CONSTRAINT' && obj.parsed && obj.parsed.tableName) {
+        const fullRef = `${obj.schema || 'dbo'}.${obj.parsed.tableName}`;
+        const resolved = resolveDeclaredSchema(fullRef, declaredSchemas, obj.schema || 'dbo');
+        referencedTablesInQuery.push({ key: resolved.key, name: resolved.name, full: fullRef });
+      }
+
+      // Validate references to actual tables/views
+      referencedTablesInQuery.forEach(tbl => {
+        const refKey = tbl.key;
+        const refName = tbl.name;
+        const fullRef = tbl.full;
         if (!declaredTables.has(refKey) && !declaredViews.has(refKey) && !refName.startsWith('#')) {
           report.errors.push({
             objectName: objLabel,
@@ -309,32 +333,24 @@ export function validateMigration(translatedObjects, sourceDialect = 'postgres')
           });
           hasCriticalError = true;
         }
-      }
+      });
 
       // Check referenced Columns inside query
       const sqlForColumns = cleanTsql.replace(/'(?:''|[^'])*'/g, "''");
       const tokens = sqlForColumns.match(/\b[a-zA-Z_][a-zA-Z0-9_]*\b/g) || [];
       const uniqueTokens = [...new Set(tokens)];
       
+      const metaRepo = {
+        tables: Object.fromEntries([...declaredTables].map(t => [t, tableColumns[t]])),
+        views: declaredViews,
+        sequences: declaredSeqs,
+        functions: declaredFunctions,
+        procedures: declaredProcedures
+      };
+
       uniqueTokens.forEach(token => {
         const lowerToken = token.toLowerCase();
-        // Skip keywords, functions, variables and local scoped names
-        if (RESERVED_KEYWORDS.has(lowerToken) || localScopeNames.has(lowerToken)) {
-          return;
-        }
-        
-        // Skip current object name, declared schemas, tables, views, sequences, functions, procedures
-        if (
-          lowerToken === obj.name.toLowerCase() ||
-          declaredSchemas.has(lowerToken) ||
-          declaredTables.has(lowerToken) ||
-          declaredViews.has(lowerToken) ||
-          declaredSeqs.has(lowerToken) ||
-          declaredFunctions.has(lowerToken) ||
-          declaredProcedures.has(lowerToken) ||
-          [...declaredTables].some(k => k.endsWith('.' + lowerToken)) ||
-          [...declaredViews].some(k => k.endsWith('.' + lowerToken))
-        ) {
+        if (isExcludedIdentifier(token, localScopeNames, declaredSchemas, metaRepo, obj.name)) {
           return;
         }
 

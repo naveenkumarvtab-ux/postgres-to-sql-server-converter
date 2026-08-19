@@ -45,4 +45,36 @@ router.get('/status', async (req, res) => {
   }
 });
 
+router.post('/cleanup-all', async (req, res) => {
+  try {
+    const pool = await getPool();
+    const dbsResult = await pool.request().query(`
+      SELECT name 
+      FROM sys.databases 
+      WHERE name LIKE 'Migration[_]%'
+    `);
+    const dbs = dbsResult.recordset.map(r => r.name);
+    
+    let droppedCount = 0;
+    for (const dbName of dbs) {
+      try {
+        await pool.request().query(`
+          IF DB_ID('${dbName}') IS NOT NULL
+          BEGIN
+            ALTER DATABASE [${dbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+            DROP DATABASE [${dbName}];
+          END
+        `);
+        droppedCount++;
+      } catch (err) {
+        console.error(`Failed to drop database ${dbName}:`, err);
+      }
+    }
+    
+    res.json({ success: true, message: `Successfully pruned ${droppedCount} temporary databases.`, droppedCount });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;

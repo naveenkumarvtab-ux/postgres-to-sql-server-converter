@@ -52,7 +52,13 @@ export default function SummaryReport({ objects, validationReport, onReset, onBa
     return objects.filter(o => o.translation.requiresAi).length;
   }, [objects]);
 
-  const categoryOrder = ['SCHEMA', 'EXTENSION', 'ENUM', 'DOMAIN', 'COMPOSITE', 'SEQUENCE', 'TABLE', 'CONSTRAINT', 'INDEX', 'VIEW', 'FUNCTION', 'PROCEDURE', 'TRIGGER', 'DATA', 'OTHER'];
+  const categoryOrder = useMemo(() => {
+    const all = ['SCHEMA', 'EXTENSION', 'ENUM', 'DOMAIN', 'COMPOSITE', 'SEQUENCE', 'TABLE', 'CONSTRAINT', 'INDEX', 'VIEW', 'FUNCTION', 'PROCEDURE', 'TRIGGER', 'DATA', 'OTHER'];
+    if (settings?.deploymentMode === 'view_only') {
+      return ['VIEW'];
+    }
+    return all;
+  }, [settings?.deploymentMode]);
 
   const reportData = useMemo(() => {
     const stats = {

@@ -249,7 +249,11 @@ export default function App() {
           if (cObj.type === 'SEQUENCE') metadataRepository.sequences.add(k);
         });
 
-        const newObjects = rawClassified.map(classified => {
+        const filteredClassified = (updated.deploymentMode === 'view_only')
+          ? rawClassified.filter(obj => obj.type === 'VIEW')
+          : rawClassified;
+
+        const newObjects = filteredClassified.map(classified => {
           const existing = objects.find(o => o.classified.id === classified.id);
           if (existing && existing.translation && !existing.translation.requiresAi && existing.translation.tsql && !existing.translation.tsql.includes('PENDING AI TRANSLATION')) {
             return existing;
@@ -368,8 +372,72 @@ export default function App() {
     });
 
     finalClassStatements.push(...fkStatements);
-    
+
+    // Uniqueness check for ALL constraint names database-wide
+    const activeConstraintNames = new Set();
+    const renameConstraint = (oldName, newName, obj) => {
+      if (obj.type === 'CONSTRAINT') {
+        obj.name = newName;
+        obj.raw = obj.raw.replace(new RegExp(oldName, 'g'), newName);
+        obj.clean = obj.clean.replace(new RegExp(oldName, 'g'), newName);
+        if (obj.parsed && obj.parsed.definition) {
+          obj.parsed.definition = obj.parsed.definition.replace(new RegExp(oldName, 'g'), newName);
+        }
+      } else if (obj.type === 'TABLE' && obj.parsed && obj.parsed.constraints) {
+        obj.parsed.constraints = obj.parsed.constraints.map(cons => {
+          const nameMatch = cons.match(/CONSTRAINT\s+([^\s;(]+)/i);
+          if (nameMatch) {
+            const currentName = cleanIdentifier(nameMatch[1]);
+            if (currentName.toLowerCase() === oldName.toLowerCase()) {
+              return cons.replace(new RegExp(currentName, 'g'), newName);
+            }
+          }
+          return cons;
+        });
+      }
+    };
+
+    finalClassStatements.forEach(obj => {
+      if (obj.type === 'CONSTRAINT') {
+        const lowerName = obj.name.toLowerCase();
+        if (activeConstraintNames.has(lowerName)) {
+          let suffix = 2;
+          let newName = `${obj.name}_${suffix}`;
+          while (activeConstraintNames.has(newName.toLowerCase())) {
+            suffix++;
+            newName = `${obj.name}_${suffix}`;
+          }
+          renameConstraint(obj.name, newName, obj);
+          activeConstraintNames.add(newName.toLowerCase());
+        } else {
+          activeConstraintNames.add(lowerName);
+        }
+      }
+      if (obj.type === 'TABLE' && obj.parsed && obj.parsed.constraints) {
+        obj.parsed.constraints.forEach((cons, idx) => {
+          const nameMatch = cons.match(/CONSTRAINT\s+([^\s;(]+)/i);
+          if (nameMatch) {
+            const currentName = cleanIdentifier(nameMatch[1]);
+            const lowerName = currentName.toLowerCase();
+            if (activeConstraintNames.has(lowerName)) {
+              let suffix = 2;
+              let newName = `${currentName}_${suffix}`;
+              while (activeConstraintNames.has(newName.toLowerCase())) {
+                suffix++;
+                newName = `${currentName}_${suffix}`;
+              }
+              obj.parsed.constraints[idx] = cons.replace(new RegExp(currentName, 'g'), newName);
+              activeConstraintNames.add(newName.toLowerCase());
+            } else {
+              activeConstraintNames.add(lowerName);
+            }
+          }
+        });
+      }
+    });
+
     // De-duplicate finalClassStatements to make sure we don't have identical raw statements
+
     const uniqueClassStatements = [];
     const seenRaw = new Set();
     finalClassStatements.forEach(stmt => {
@@ -467,8 +535,12 @@ export default function App() {
       if (cObj.type === 'SEQUENCE') metadataRepository.sequences.add(k);
     });
 
+    const filteredClassStatements = (settings.deploymentMode === 'view_only')
+      ? finalClassStatements.filter(obj => obj.type === 'VIEW')
+      : finalClassStatements;
+
     // 3. Second pass: translate statements passing the context
-    const processedObjects = finalClassStatements.map(classified => {
+    const processedObjects = filteredClassStatements.map(classified => {
       const translation = translateObject(
         classified, 
         settings.useUnicode, 
@@ -664,6 +736,7 @@ export default function App() {
       setStep('upload');
       setMetadata(null);
       setIsTranslatingMap({});
+      setValidationReport(null);
     }
   };
 

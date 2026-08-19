@@ -36,12 +36,14 @@ const checkUnresolvedReferences = async (pool, dbName) => {
   try {
     const depsResult = await pool.request().query(`
       SELECT 
-        OBJECT_NAME(referencing_id) as referencing_object,
-        referenced_entity_name as missing_reference
-      FROM sys.sql_expression_dependencies
-      WHERE is_ambiguous = 0 
-        AND referenced_id IS NULL 
-        AND referenced_entity_name NOT IN ('inserted', 'deleted')
+        s.name + '.' + o.name as [object],
+        dep.referenced_entity_name as [dependency]
+      FROM sys.sql_expression_dependencies dep
+      INNER JOIN sys.objects o ON dep.referencing_id = o.object_id
+      INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
+      WHERE dep.is_ambiguous = 0 
+        AND dep.referenced_id IS NULL 
+        AND dep.referenced_entity_name NOT IN ('inserted', 'deleted')
     `);
     
     return depsResult.recordset;
@@ -61,7 +63,8 @@ const getObjectCounts = async (pool, dbName) => {
     functions: 0,
     triggers: 0,
     constraints: 0,
-    indexes: 0
+    indexes: 0,
+    sequences: 0
   };
   
   try {
@@ -81,11 +84,23 @@ const getObjectCounts = async (pool, dbName) => {
       if (type === 'TR') counts.triggers += row.cnt;
     }
 
-    // Constraints & Keys count (all foreign keys)
+    // Constraints & Keys count (foreign keys + check constraints + key constraints)
     const fkResult = await pool.request().query(`
       SELECT COUNT(*) as cnt FROM sys.foreign_keys
     `);
-    counts.constraints = fkResult.recordset[0].cnt;
+    const ckResult = await pool.request().query(`
+      SELECT COUNT(*) as cnt FROM sys.check_constraints
+    `);
+    const kcResult = await pool.request().query(`
+      SELECT COUNT(*) as cnt FROM sys.key_constraints
+    `);
+    counts.constraints = fkResult.recordset[0].cnt + ckResult.recordset[0].cnt + kcResult.recordset[0].cnt;
+
+    // Sequences count
+    const seqResult = await pool.request().query(`
+      SELECT COUNT(*) as cnt FROM sys.sequences
+    `);
+    counts.sequences = seqResult.recordset[0].cnt;
 
     // Indexes count (excluding PK and Unique Constraint indexes)
     const idxResult = await pool.request().query(`
@@ -117,6 +132,7 @@ const getDeployedObjectsList = async (pool, dbName) => {
   const triggers = [];
   const constraints = [];
   const indexes = [];
+  const sequences = [];
   
   try {
     // Schemas
@@ -167,14 +183,38 @@ const getDeployedObjectsList = async (pool, dbName) => {
     `);
     trgs.recordset.forEach(r => triggers.push({ schema: r.SchemaName, name: r.TriggerName }));
 
-    // Constraints (all foreign keys)
+    // Constraints (Foreign Keys)
     const fks = await pool.request().query(`
       SELECT s.name AS SchemaName, f.name AS ConstraintName
       FROM sys.foreign_keys f
       JOIN sys.schemas s ON f.schema_id = s.schema_id
     `);
     fks.recordset.forEach(r => constraints.push({ schema: r.SchemaName, name: r.ConstraintName }));
+
+    // Constraints (Check Constraints)
+    const cks = await pool.request().query(`
+      SELECT s.name AS SchemaName, c.name AS ConstraintName
+      FROM sys.check_constraints c
+      JOIN sys.schemas s ON c.schema_id = s.schema_id
+    `);
+    cks.recordset.forEach(r => constraints.push({ schema: r.SchemaName, name: r.ConstraintName }));
+
+    // Constraints (Key Constraints - PK & UQ)
+    const kcs = await pool.request().query(`
+      SELECT s.name AS SchemaName, k.name AS ConstraintName
+      FROM sys.key_constraints k
+      JOIN sys.schemas s ON k.schema_id = s.schema_id
+    `);
+    kcs.recordset.forEach(r => constraints.push({ schema: r.SchemaName, name: r.ConstraintName }));
     
+    // Sequences
+    const seqs = await pool.request().query(`
+      SELECT s.name AS SchemaName, sq.name AS SequenceName
+      FROM sys.sequences sq
+      JOIN sys.schemas s ON sq.schema_id = s.schema_id
+    `);
+    seqs.recordset.forEach(r => sequences.push({ schema: r.SchemaName, name: r.SequenceName }));
+
     // Indexes (excluding PK and UQ indexes)
     const idxs = await pool.request().query(`
       SELECT s.name AS SchemaName, t.name AS TableName, i.name AS IndexName
@@ -200,7 +240,8 @@ const getDeployedObjectsList = async (pool, dbName) => {
     functions,
     triggers,
     constraints,
-    indexes
+    indexes,
+    sequences
   };
 };
 
