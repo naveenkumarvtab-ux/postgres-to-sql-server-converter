@@ -114,3 +114,10 @@ If connecting via `sa` user fails, ensure Mixed Mode Authentication is active:
 ### 2. Target SQL Server Version
 - **2017+ (Default)**: Leverages modern T-SQL functions (like native `CONCAT_WS`, `STRING_AGG`, etc.).
 - **2016 & Lower**: Automatically converts modern functions into safe fallback combinations (e.g., simulating `CONCAT_WS` using `STUFF` and `COALESCE` concatenations).
+
+---
+
+## 👥 Contributors
+
+- **Naveenkumar**
+- **Aakaash padhmanaban**
