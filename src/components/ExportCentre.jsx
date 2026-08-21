@@ -69,6 +69,10 @@ export default function ExportCentre({
   const [backupSessionId, setBackupSessionId] = useState(null);
   const [bypassErrors, setBypassErrors] = useState(false);
   const [activeDrillDown, setActiveDrillDown] = useState(null);
+  const [customDbName, setCustomDbName] = useState(() => {
+    const prefix = settings?.sqlServerConfig?.dbPrefix || 'Migration';
+    return `${prefix}_Db`;
+  });
 
   const pendingAiCount = useMemo(() => objects.filter(o => o.translation.requiresAi).length, [objects]);
   const errorCount = validationReport?.errors?.length || 0;
@@ -980,7 +984,7 @@ ${objectLogSection}`;
     setCompileResults(null);
     setBackupSessionId(null);
 
-    const dbName = `${sqlConfig.dbPrefix}_${Date.now()}`;
+    const dbName = customDbName.trim() || `${sqlConfig.dbPrefix || 'Migration'}_Db`;
     let activeSessionId = null;
     
     try {
@@ -1177,6 +1181,32 @@ ${objectLogSection}`;
 
               {deployPhase === null && (
                 <>
+                  <div style={{ marginBottom: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.4rem', maxWidth: '350px' }}>
+                    <label style={{ fontSize: '0.85rem', fontWeight: '600', color: 'var(--text-primary)' }}>
+                      Target Database Name
+                    </label>
+                    <input
+                      type="text"
+                      className="form-control"
+                      value={customDbName}
+                      onChange={(e) => setCustomDbName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                      placeholder="e.g. MyMigrationDb"
+                      style={{ 
+                        padding: '0.5rem 0.75rem', 
+                        fontSize: '0.85rem', 
+                        borderRadius: '6px', 
+                        border: '1px solid var(--panel-border)', 
+                        background: 'var(--panel-tab-bg)', 
+                        color: 'var(--text-primary)',
+                        width: '100%',
+                        boxSizing: 'border-box'
+                      }}
+                    />
+                    <small style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                      Specify the name of the database to create on SQL Server for deployment.
+                    </small>
+                  </div>
+
                   <button 
                     className={`btn btn-primary deploy-btn ${((!bypassErrors && errorCount > 0) || (!bypassErrors && pendingAiCount > 0)) ? 'disabled' : ''}`}
                     onClick={startDeployment}

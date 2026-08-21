@@ -286,10 +286,10 @@ export default function UploadZone({ onFilesUploaded }) {
             AI MIGRATION ENGINE ACTIVE
           </span>
           <h2 className="hero-title">
-            PostgreSQL & Oracle <span className="title-arrow">➜</span> SQL Server
+            PostgreSQL, Oracle & MySQL <span className="title-arrow">➜</span> SQL Server
           </h2>
           <p className="hero-desc">
-            Enterprise-grade automated migration. Upload your PostgreSQL or Oracle schema scripts, run the analysis
+            Enterprise-grade automated migration. Upload your PostgreSQL, Oracle, or MySQL schema scripts, run the analysis
             engine, and export a deployment-ready SQL Server T-SQL project with structure validation and dependency checks.
           </p>
         </div>
