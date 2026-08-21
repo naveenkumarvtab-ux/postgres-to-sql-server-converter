@@ -2481,13 +2481,31 @@ export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'p
   clean = clean.replace(/\bEXIT\s+WHEN\s+([^;]+)/gi, 'IF $1 BREAK');
 
   // 11.9. Stored Procedure Fixes: Ensure MERGE statements are terminated with a semicolon
-  const mergeRegex = /\bMERGE\s+[\s\S]+?(?:WHEN\s+(?:NOT\s+)?MATCHED\s+THEN\s+(?:INSERT\s*\(.*?\)\s*VALUES\s*\((?:[^()]+|\([^()]*\))*\)|UPDATE\s+SET\s+[\s\S]+?|DELETE))(?=\s*(?:\bSET\b|\bFETCH\b|\bCLOSE\b|\bDEALLOCATE\b|\bCOMMIT\b|\bROLLBACK\b|\bIF\b|\bDECLARE\b|\bBEGIN\b|\bEND\b|\bGO\b|$))/gi;
-  clean = clean.replace(mergeRegex, (match) => {
-    let cleaned = match.replace(/;(\s*)(?=WHEN\s+(?:NOT\s+)?MATCHED)/gi, '$1');
-    const trimmed = cleaned.trim();
-    if (trimmed.endsWith(';')) return cleaned;
-    return trimmed + ';';
-  });
+  let mergeIdx = clean.toUpperCase().indexOf('MERGE');
+  while (mergeIdx !== -1) {
+    const prevChar = mergeIdx > 0 ? clean[mergeIdx - 1] : '';
+    if (/[a-zA-Z0-9_]/.test(prevChar)) {
+      mergeIdx = clean.toUpperCase().indexOf('MERGE', mergeIdx + 5);
+      continue;
+    }
+    
+    const statement = scanMergeStatement(clean, mergeIdx);
+    if (statement) {
+      let cleaned = statement.replace(/;(\s*)(?=WHEN\s+(?:NOT\s+)?MATCHED)/gi, '$1');
+      const trimmed = cleaned.trim();
+      let replacement = trimmed;
+      if (!trimmed.endsWith(';')) {
+        replacement = trimmed + ';';
+      }
+      
+      if (replacement !== statement) {
+        clean = clean.substring(0, mergeIdx) + replacement + clean.substring(mergeIdx + statement.length);
+      }
+      mergeIdx = clean.toUpperCase().indexOf('MERGE', mergeIdx + replacement.length);
+    } else {
+      mergeIdx = clean.toUpperCase().indexOf('MERGE', mergeIdx + 5);
+    }
+  }
 
   // 11.95. Function Fixes: Ensure T-SQL scalar functions end with an unconditional RETURN statement
   if (/CREATE\s+(?:OR\s+ALTER\s+)?FUNCTION\b/i.test(clean)) {
@@ -2976,5 +2994,69 @@ export function convertOracleViewToTsql(sql, schemaName, viewName) {
   }
   
   return tsql;
+}
+
+export function scanMergeStatement(sql, startIndex) {
+  let pLevel = 0;
+  let caseCount = 0;
+  let i = startIndex;
+  
+  const keywords = ['SET', 'FETCH', 'CLOSE', 'DEALLOCATE', 'COMMIT', 'ROLLBACK', 'IF', 'DECLARE', 'BEGIN', 'GO'];
+  
+  while (i < sql.length) {
+    const char = sql[i];
+    
+    if (char === '(') {
+      pLevel++;
+      i++;
+      continue;
+    }
+    if (char === ')') {
+      pLevel = Math.max(0, pLevel - 1);
+      i++;
+      continue;
+    }
+    
+    // Check word boundaries
+    if (/\w/.test(char) && (i === 0 || !/\w/.test(sql[i - 1]))) {
+      // Find the end of the word
+      let wordEnd = i;
+      while (wordEnd < sql.length && /\w/.test(sql[wordEnd])) {
+        wordEnd++;
+      }
+      const word = sql.substring(i, wordEnd).toUpperCase();
+      
+      if (word === 'CASE') {
+        caseCount++;
+      } else if (word === 'END') {
+        if (caseCount > 0) {
+          caseCount--;
+        } else if (pLevel === 0) {
+          // Found block END! Stop before it.
+          return sql.substring(startIndex, i);
+        }
+      } else if (pLevel === 0 && caseCount === 0) {
+        if (keywords.includes(word)) {
+          // Skip 'SET' if it is part of 'UPDATE SET' or 'MERGE ... UPDATE SET'
+          const isUpdateSet = (word === 'SET' && sql.substring(Math.max(0, i - 10), i).toUpperCase().includes('UPDATE'));
+          if (!isUpdateSet) {
+            // Found next statement keyword! Stop before it.
+            return sql.substring(startIndex, i);
+          }
+        }
+      }
+      i = wordEnd;
+      continue;
+    }
+    
+    if (char === ';' && pLevel === 0 && caseCount === 0) {
+      // Include the semicolon in the match
+      return sql.substring(startIndex, i + 1);
+    }
+    
+    i++;
+  }
+  
+  return sql.substring(startIndex);
 }
 
