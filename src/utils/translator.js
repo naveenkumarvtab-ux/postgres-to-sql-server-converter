@@ -1116,8 +1116,25 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
         break;
       }
       
+      const pkCols = new Set();
+      if (obj.parsed.constraints) {
+        for (const cons of obj.parsed.constraints) {
+          const upperCons = cons.toUpperCase().trim();
+          if (upperCons.includes('PRIMARY KEY')) {
+            const match = cons.match(/PRIMARY\s+KEY\s*\(([^)]+)\)/i);
+            if (match) {
+              const cols = match[1].split(',').map(c => cleanIdentifier(c).toLowerCase().trim());
+              cols.forEach(c => pkCols.add(c));
+            }
+          }
+        }
+      }
+      
       const colsTsql = [];
       for (const col of obj.parsed.columns) {
+        if (col.name && pkCols.has(col.name.toLowerCase().trim())) {
+          col.nullable = false;
+        }
         // Apply overrides from metadata if match found
         const overridenCol = applyMetadataOverrides(col, obj.name, metadata);
         const trans = translateColumn(overridenCol, useUnicode, enums, domains, composites, dialect);

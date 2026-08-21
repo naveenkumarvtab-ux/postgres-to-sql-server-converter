@@ -55,6 +55,10 @@ function sortTopologically(list, allObjects) {
     allObjects.forEach(other => {
       if (!other.classified?.id) return;
       if (other.classified.id === obj.classified.id) return;
+      const otherType = (other.classified.type || '').toUpperCase();
+      if (['DATA', 'INDEX', 'CONSTRAINT', 'OTHER'].includes(otherType)) {
+        return;
+      }
       const otherName = other.classified.name.toLowerCase();
       const escapedName = otherName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const regex = new RegExp(`\\b${escapedName}\\b`, 'i');
@@ -128,7 +132,7 @@ const deployObjects = async (pool, dbName, objects, onProgress) => {
     
     try {
       const schema = obj.classified?.schema || 'dbo';
-      if (schema.toLowerCase() !== 'dbo' && schema.toLowerCase() !== 'sys') {
+      if (schema.toLowerCase() !== 'dbo' && schema.toLowerCase() !== 'sys' && schema.toLowerCase() !== 'public') {
         await pool.request().query(`
           IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = '${schema}')
           BEGIN

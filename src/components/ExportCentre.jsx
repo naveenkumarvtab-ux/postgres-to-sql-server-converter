@@ -21,6 +21,10 @@ function sortTopologically(list, allObjects, circularWarnings = null) {
     allObjects.forEach(other => {
       if (!other?.classified?.id) return;
       if (other.classified.id === obj.classified.id) return;
+      const otherType = (other.classified.type || '').toUpperCase();
+      if (['DATA', 'INDEX', 'CONSTRAINT', 'OTHER'].includes(otherType)) {
+        return;
+      }
       const otherName = other.classified.name.toLowerCase();
       const escapedName = otherName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const regex = new RegExp(`\\b${escapedName}\\b`, 'i');
