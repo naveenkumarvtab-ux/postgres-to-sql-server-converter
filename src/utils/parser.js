@@ -226,12 +226,70 @@ function splitMySqlStatements(sqlContent) {
   return statements.filter(stmt => stmt.trim().length > 0);
 }
 
+function splitMultiConstraintAlterTable(sql) {
+  const cleanSql = sql.trim();
+  const alterMatch = cleanSql.match(/^ALTER\s+TABLE\s+(?:ONLY\s+)?([^\s;]+)\s+ADD\s+/i);
+  if (!alterMatch) return [sql];
+
+  const tableName = alterMatch[1];
+  const rest = cleanSql.substring(alterMatch[0].length);
+
+  let parenDepth = 0;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let currentPart = '';
+  const parts = [];
+
+  for (let i = 0; i < rest.length; i++) {
+    const char = rest[i];
+    if (char === "'" && rest[i - 1] !== '\\') {
+      inSingleQuote = !inSingleQuote;
+    } else if (char === '"' && rest[i - 1] !== '\\') {
+      inDoubleQuote = !inDoubleQuote;
+    }
+
+    if (!inSingleQuote && !inDoubleQuote) {
+      if (char === '(') parenDepth++;
+      else if (char === ')') parenDepth--;
+    }
+
+    if (char === ',' && parenDepth === 0 && !inSingleQuote && !inDoubleQuote) {
+      const remainder = rest.substring(i + 1).trim();
+      if (/^(?:ADD\s+)?CONSTRAINT\b/i.test(remainder) || /^(?:ADD\s+)?FOREIGN\s+KEY\b/i.test(remainder) || /^(?:ADD\s+)?PRIMARY\s+KEY\b/i.test(remainder) || /^(?:ADD\s+)?CHECK\b/i.test(remainder) || /^(?:ADD\s+)?UNIQUE\b/i.test(remainder)) {
+        parts.push(currentPart.trim());
+        currentPart = '';
+        continue;
+      }
+    }
+    currentPart += char;
+  }
+  if (currentPart.trim()) {
+    parts.push(currentPart.trim());
+  }
+
+  if (parts.length <= 1) {
+    return [sql];
+  }
+
+  return parts.map(part => {
+    let cleanPart = part.trim();
+    if (cleanPart.endsWith(';')) {
+      cleanPart = cleanPart.substring(0, cleanPart.length - 1).trim();
+    }
+    if (/^ADD\b/i.test(cleanPart)) {
+      return `ALTER TABLE ${tableName} ${cleanPart};`;
+    } else {
+      return `ALTER TABLE ${tableName} ADD ${cleanPart};`;
+    }
+  });
+}
+
 export function splitSqlStatements(sqlContent, dialect = 'postgres') {
   if (dialect === 'oracle') {
-    return splitOracleStatements(sqlContent);
+    return splitOracleStatements(sqlContent).flatMap(splitMultiConstraintAlterTable);
   }
   if (dialect === 'mysql') {
-    return splitMySqlStatements(sqlContent);
+    return splitMySqlStatements(sqlContent).flatMap(splitMultiConstraintAlterTable);
   }
 
   const statements = [];
@@ -329,7 +387,7 @@ export function splitSqlStatements(sqlContent, dialect = 'postgres') {
     statements.push(currentStatement.trim());
   }
   
-  return statements.filter(stmt => stmt.length > 0);
+  return statements.filter(stmt => stmt.length > 0).flatMap(splitMultiConstraintAlterTable);
 }
 
 /**

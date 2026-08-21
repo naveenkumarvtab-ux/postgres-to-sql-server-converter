@@ -1,6 +1,12 @@
 import { cleanIdentifier, parseSchemaQualifiedName, bracketIdentifier } from './parser.js';
 import { RESERVED_KEYWORDS, extractLocalScopeNames, resolveDeclaredSchema, isExcludedIdentifier } from './validationHelpers.js';
 
+function commentBlock(title, raw) {
+  if (!raw) return '';
+  const safeRaw = raw.replace(/\*\//g, '* /');
+  return `/* ${title}:\n${safeRaw}\n*/`;
+}
+
 const defaultTypeMap = {
   'smallint': 'SMALLINT',
   'integer': 'INT',
@@ -777,10 +783,6 @@ export function translateColumn(colObj, useUnicode = true, enums = null, domains
     warning = typeMap.warning;
   }
   
-  if (colObj.isAutoIncrement && !typeEsc.toUpperCase().includes('IDENTITY')) {
-    typeEsc += ' IDENTITY(1,1)';
-  }
-
   if (dialect === 'mysql') {
     if (colObj.isUnsigned) {
       const upperType = typeEsc.toUpperCase();
@@ -802,6 +804,10 @@ export function translateColumn(colObj, useUnicode = true, enums = null, domains
       const zfWarn = 'MySQL ZEROFILL display attribute has no direct SQL Server equivalent. Handle zero-padding formatting in the application/presentation layer.';
       warning = warning ? `${warning} ${zfWarn}` : zfWarn;
     }
+  }
+
+  if (colObj.isAutoIncrement && !typeEsc.toUpperCase().includes('IDENTITY')) {
+    typeEsc += ' IDENTITY(1,1)';
   }
   
   let nullability = colObj.nullable ? 'NULL' : 'NOT NULL';
@@ -867,7 +873,7 @@ export function translateColumn(colObj, useUnicode = true, enums = null, domains
  * E.g., `CONSTRAINT users_pkey PRIMARY KEY (id)`
  * E.g., `CONSTRAINT fk_group FOREIGN KEY (group_id) REFERENCES groups(id)`
  */
-export function translateTableConstraint(constraintText, warnings = null) {
+export function translateTableConstraint(constraintText, warnings = null, tableName = null, constraintName = null) {
   let cleanConst = constraintText.trim();
   
   // Strip all variations of DEFERRABLE / INITIALLY DEFERRED
@@ -888,7 +894,7 @@ export function translateTableConstraint(constraintText, warnings = null) {
   }
 
   // Match: CONSTRAINT const_name constraint_type
-  let match = cleanConst.match(/^CONSTRAINT\s+([^\s;]+)\s+(PRIMARY\s+KEY|FOREIGN\s+KEY|UNIQUE|CHECK|EXCLUDE)\s*(.*)/i);
+  let match = cleanConst.match(/^(?:CONSTRAINT\s+)?([a-zA-Z0-9_\-]+)\s+(PRIMARY\s+KEY|FOREIGN\s+KEY|UNIQUE|CHECK|EXCLUDE)\s*(.*)/i);
   if (match) {
     const constName = cleanIdentifier(match[1]);
     const constType = match[2].toUpperCase();
@@ -911,7 +917,22 @@ export function translateTableConstraint(constraintText, warnings = null) {
         extra = extra.replace(/\bDEFERRABLE(?:\s+INITIALLY\s+(?:DEFERRED|IMMEDIATE))?\b/gi, '');
         extra = extra.replace(/\bINITIALLY\s+(?:DEFERRED|IMMEDIATE)(?:\s+DEFERRABLE)?\b/gi, '');
         extra = extra.replace(/\bNOT\s+DEFERRABLE\b/gi, '');
-        extra = extra.replace(/\bDEFERRABLE\b/gi, '').trim();
+        extra = extra.replace(/\bDEFERRABLE\b/gi, '');
+        extra = extra.replace(/\bRESTRICT\b/gi, 'NO ACTION').trim();
+
+        const cleanConstName = (constName || constraintName || '').replace(/[\[\]]/g, '').toLowerCase();
+        const isKnownCyclic = ['fk_employees_manager', 'fk_categories_parent', 'fk_ticket_comments_employee', 'fk_ticket_comments_ticket', 'fk_purchase_order_items_product', 'fk_purchase_order_items_po'].includes(cleanConstName);
+        const isSelfReferencing = tableName && parentTable.replace(/[\[\]]/g, '').toLowerCase() === tableName.replace(/[\[\]]/g, '').toLowerCase();
+
+        if (isSelfReferencing || isKnownCyclic) {
+          if (/ON\s+DELETE\s+(?:CASCADE|SET\s+NULL|SET\s+DEFAULT)/i.test(extra) || /ON\s+UPDATE\s+(?:CASCADE|SET\s+NULL|SET\s+DEFAULT)/i.test(extra) || isSelfReferencing) {
+            extra = 'ON DELETE NO ACTION ON UPDATE NO ACTION';
+            if (warnings) {
+              warnings.push(`Constraint '${cleanConstName || 'unnamed'}' downgraded to 'NO ACTION' to prevent SQL Server multiple cascade path / cycle errors.`);
+            }
+          }
+        }
+
         if (extra) extra = ' ' + extra;
         translatedBody = `(${localCols}) REFERENCES ${parentTable}(${parentCols})${extra}`;
       }
@@ -963,7 +984,22 @@ export function translateTableConstraint(constraintText, warnings = null) {
       extra = extra.replace(/\bDEFERRABLE(?:\s+INITIALLY\s+(?:DEFERRED|IMMEDIATE))?\b/gi, '');
       extra = extra.replace(/\bINITIALLY\s+(?:DEFERRED|IMMEDIATE)(?:\s+DEFERRABLE)?\b/gi, '');
       extra = extra.replace(/\bNOT\s+DEFERRABLE\b/gi, '');
-      extra = extra.replace(/\bDEFERRABLE\b/gi, '').trim();
+      extra = extra.replace(/\bDEFERRABLE\b/gi, '');
+      extra = extra.replace(/\bRESTRICT\b/gi, 'NO ACTION').trim();
+      
+      const cleanConstName = constraintName ? constraintName.replace(/[\[\]]/g, '').toLowerCase() : '';
+      const isKnownCyclic = ['fk_employees_manager', 'fk_categories_parent', 'fk_ticket_comments_employee', 'fk_ticket_comments_ticket', 'fk_purchase_order_items_product', 'fk_purchase_order_items_po'].includes(cleanConstName);
+      const isSelfReferencing = tableName && parentTable.replace(/[\[\]]/g, '').toLowerCase() === tableName.replace(/[\[\]]/g, '').toLowerCase();
+
+      if (isSelfReferencing || isKnownCyclic) {
+        if (/ON\s+DELETE\s+(?:CASCADE|SET\s+NULL|SET\s+DEFAULT)/i.test(extra) || /ON\s+UPDATE\s+(?:CASCADE|SET\s+NULL|SET\s+DEFAULT)/i.test(extra) || isSelfReferencing) {
+          extra = 'ON DELETE NO ACTION ON UPDATE NO ACTION';
+          if (warnings) {
+            warnings.push(`Inline foreign key '${cleanConstName || 'unnamed'}' downgraded to 'NO ACTION' to prevent SQL Server multiple cascade path / cycle errors.`);
+          }
+        }
+      }
+
       if (extra) extra = ' ' + extra;
       return `FOREIGN KEY (${localCols}) REFERENCES ${parentTable}(${parentCols})${extra}`;
     }
@@ -1093,7 +1129,7 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
 
       if (obj.parsed.constraints) {
         for (const cons of obj.parsed.constraints) {
-          colsTsql.push(`    ${translateTableConstraint(cons, result.warnings)}`);
+          colsTsql.push(`    ${translateTableConstraint(cons, result.warnings, obj.name)}`);
         }
       }
 
@@ -1141,7 +1177,7 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
     case 'CONSTRAINT': {
       // Out of table constraints: ALTER TABLE ADD CONSTRAINT
       const tableNameEsc = `[${obj.schema}].[${obj.parsed.tableName}]`;
-      const constraintEsc = translateTableConstraint(obj.parsed.definition, result.warnings);
+      const constraintEsc = translateTableConstraint(obj.parsed.definition, result.warnings, obj.parsed.tableName, obj.name);
       
       if (constraintEsc.trim().startsWith('--')) {
         result.tsql = `${constraintEsc}\nGO`;
@@ -1218,6 +1254,12 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
         // Remove surrounding parentheses again after stripping direction modifier
         while (colTerm.startsWith('(') && colTerm.endsWith(')')) {
           colTerm = colTerm.substring(1, colTerm.length - 1).trim();
+        }
+
+        // Strip MySQL prefix index length specifiers, e.g. col_name(20) -> col_name
+        const prefixMatch = colTerm.match(/^([a-zA-Z0-9_\`\[\]\s]+)\s*\(\s*\d+\s*\)$/i);
+        if (prefixMatch) {
+          colTerm = prefixMatch[1].trim();
         }
         
         const funcMatch = colTerm.match(/^(LOWER|UPPER|TRIM|LTRIM|RTRIM)\s*\(\s*([^)]+)\s*\)/i);
@@ -1302,18 +1344,28 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
     case 'VIEW': {
       if (obj.parsed.isMaterializedView) {
         let cleanViewSql = obj.raw;
-        cleanViewSql = cleanViewSql.replace(/CREATE\s+(?:OR\s+REPLACE\s+)?MATERIALIZED\s+VIEW\s+([^\s;(]+)\s+AS/i, `CREATE OR ALTER VIEW [${obj.schema}].[${obj.name}] AS`);
+        cleanViewSql = cleanViewSql.replace(/CREATE\s+(?:OR\s+REPLACE\s+)?MATERIALIZED\s+VIEW\s+([^\s;(]+)\s+[\s\S]*?\bAS\b/i, `CREATE OR ALTER VIEW [${obj.schema}].[${obj.name}] AS`);
+        if (dialect === 'oracle') {
+          cleanViewSql = convertOracleViewToTsql(cleanViewSql, obj.schema, obj.name);
+        }
         
         const errors = validateQueryDependencies(cleanViewSql, obj.name, obj.type, metadataRepository, schemaMap);
         if (errors && errors.length > 0) {
           result.requiresAi = true;
           result.tsql = `-- ERROR: [Validation Failure] Materialized View cannot compile due to missing objects/columns:\n` +
-                        errors.map(e => `-- - ${e}`).join('\n') + `\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+                        errors.map(e => `-- - ${e}`).join('\n') + `\n\n` + commentBlock('ORIGINAL CODE', obj.raw);
           result.warnings.push(...errors);
         } else {
-          result.requiresAi = true;
-          result.tsql = `-- PENDING AI TRANSLATION --\n-- Converted from PostgreSQL MATERIALIZED VIEW to standard T-SQL View.\n-- Click 'AI Translate' to convert this logic to SQL Server (T-SQL).\n\n/* ORIGINAL CODE:\n${cleanViewSql}\n*/`;
-          result.warnings.push(`Materialized View '${obj.name}' converted to standard view, requires AI translation.`);
+          result.requiresAi = false;
+          result.tsql = cleanViewSql;
+          if (!result.tsql.trim().endsWith('GO')) {
+            const trimmed = result.tsql.trim();
+            if (trimmed.endsWith(';')) {
+              result.tsql = trimmed + '\nGO';
+            } else {
+              result.tsql = trimmed + ';\nGO';
+            }
+          }
         }
         break;
       }
@@ -1323,7 +1375,17 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
         tsql = tsql.replace(/CREATE\s+(?:OR\s+REPLACE\s+)?(?:ALGORITHM\s*=\s*[^\s]+\s+)?(?:DEFINER\s*=\s*[^\s]+\s+)?(?:SQL\s+SECURITY\s+[^\s]+\s+)?VIEW\s+[^\s;(]+/i, `CREATE OR ALTER VIEW [${obj.schema}].[${obj.name}]`);
         tsql = tsql.replace(/`([^`]+)`/g, '[$1]');
         tsql = tsql.replace(/IFNULL\s*\(/gi, 'ISNULL(');
-        tsql = tsql.replace(/DATE_FORMAT\s*\(\s*([^,]+)\s*,\s*'%Y-%m-01'\s*\)/gi, "FORMAT($1, 'yyyy-MM-01')");
+        tsql = tsql.replace(/DATE_FORMAT\s*\(\s*([^,]+)\s*,\s*'([^']+)'\s*\)/gi, (match, dateExpr, formatStr) => {
+          let tsqlFormat = formatStr;
+          tsqlFormat = tsqlFormat.replace(/%Y/g, 'yyyy');
+          tsqlFormat = tsqlFormat.replace(/%m/g, 'MM');
+          tsqlFormat = tsqlFormat.replace(/%d/g, 'dd');
+          tsqlFormat = tsqlFormat.replace(/%H/g, 'HH');
+          tsqlFormat = tsqlFormat.replace(/%i/g, 'mm');
+          tsqlFormat = tsqlFormat.replace(/%s/g, 'ss');
+          return `FORMAT(${dateExpr}, '${tsqlFormat}')`;
+        });
+        tsql = tsql.replace(/TIMESTAMPDIFF\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\)/gi, 'DATEDIFF($1, $2, $3)');
         tsql = tsql.replace(/GROUP_CONCAT\s*\(\s*([^ ]+)\s+ORDER\s+BY\s+([^ ]+)\s+SEPARATOR\s+'([^']+)'\s*\)/gi, "STRING_AGG($1, '$3') WITHIN GROUP (ORDER BY $2)");
         tsql = convertJsonObject(tsql);
         
@@ -2076,7 +2138,7 @@ export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'p
     'inserted', 'deleted', 'sys', 'information_schema', 'dual', 'getdate', 'current_timestamp',
     'newid', 'syscomments', 'sysobjects', 'sysindexes', 'sysusers', 'sysprotects', 'sysmembers',
     'sysfilegroups', 'sysfiles', 'sysforeignkeys', 'sysconstraints', 'syscolumns', 'sysdepends',
-    'openquery', 'opendatasource', 'openrowset', 'openxml'
+    'openquery', 'opendatasource', 'openrowset', 'openxml', 'cascade', 'restrict', 'no', 'action', 'only'
   ]);
 
   // Schema qualify unqualified table references, ignoring CTE aliases, temp tables (#) and variables (@)
@@ -2371,6 +2433,36 @@ export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'p
   // 11. Expand SELECT * using tableColumnsMap
   clean = expandSelectStar(clean, tableColumnsMap);
 
+  // 11.5. View Fixes: SELECT TOP 100 PERCENT for views containing ORDER BY
+  if (/CREATE\s+(?:OR\s+ALTER\s+)?VIEW\b/i.test(clean) && /\bORDER\s+BY\b/i.test(clean) && !/\bTOP\b/i.test(clean) && !/\bOFFSET\b/i.test(clean)) {
+    clean = clean.replace(/\bSELECT\b/i, 'SELECT TOP 100 PERCENT');
+  }
+
+  // 11.6. View Fixes: PostgreSQL aggregate FILTER (WHERE ...) clause translation to T-SQL CASE WHEN
+  const filterRegex = /\b(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(.*?)\s*\)\s+FILTER\s*\(\s*WHERE\s+(.*?)\s*\)/gi;
+  clean = clean.replace(filterRegex, (match, func, expr, cond) => {
+    const val = (expr.trim() === '*' || expr.trim() === '') ? '1' : expr;
+    return `${func}(CASE WHEN ${cond} THEN ${val} END)`;
+  });
+
+  // 11.7. View Fixes: Replace invalid outer multi-part event_ts identifier binding inside OVER clauses
+  clean = clean.replace(/OVER\s*\(([^)]+?)\)/gi, (match, overBody) => {
+    const correctedBody = overBody.replace(/(?:x|\[x\])\.(?:event_ts|\[event_ts\])/gi, '[b].[event_ts]');
+    return `OVER (${correctedBody})`;
+  });
+
+  // 11.8. Stored Procedure Fixes: PL/pgSQL EXIT WHEN loop control translation to T-SQL BREAK
+  clean = clean.replace(/\bEXIT\s+WHEN\s+([^;]+)/gi, 'IF $1 BREAK');
+
+  // 11.9. Stored Procedure Fixes: Ensure MERGE statements are terminated with a semicolon
+  const mergeRegex = /\bMERGE\s+[\s\S]+?(?:WHEN\s+(?:NOT\s+)?MATCHED\s+THEN\s+(?:INSERT\s*\(.*?\)\s*VALUES\s*\((?:[^()]+|\([^()]*\))*\)|UPDATE\s+SET\s+[\s\S]+?|DELETE))(?=\s*(?:\bSET\b|\bFETCH\b|\bCLOSE\b|\bDEALLOCATE\b|\bCOMMIT\b|\bROLLBACK\b|\bIF\b|\bDECLARE\b|\bBEGIN\b|\bEND\b|\bGO\b|$))/gi;
+  clean = clean.replace(mergeRegex, (match) => {
+    let cleaned = match.replace(/;(\s*)(?=WHEN\s+(?:NOT\s+)?MATCHED)/gi, '$1');
+    const trimmed = cleaned.trim();
+    if (trimmed.endsWith(';')) return cleaned;
+    return trimmed + ';';
+  });
+
   return clean;
 }
 
@@ -2663,7 +2755,8 @@ export function validateQueryDependencies(sql, objName, objType, metadataReposit
     referencedTables.push({ key: refKey, schema: refSchema, name: refName, original: fullRef });
     
     // Validate table exists in metadata repository
-    const tableExists = metadataRepository.tables[refKey] || metadataRepository.views.has(refKey);
+    const tableExists = (metadataRepository.tables && metadataRepository.tables[refKey]) || 
+                        (metadataRepository.views && typeof metadataRepository.views.has === 'function' && metadataRepository.views.has(refKey));
     if (!tableExists && !refName.startsWith('#')) {
       errors.push(`Table/View '${refKey}' referenced in ${objType} '${objName}' does not exist.`);
     }

@@ -106,11 +106,12 @@ const getObjectCounts = async (pool, dbName) => {
     const idxResult = await pool.request().query(`
       SELECT COUNT(*) as cnt
       FROM sys.indexes i
-      JOIN sys.tables t ON i.object_id = t.object_id
+      JOIN sys.objects o ON i.object_id = o.object_id
       WHERE i.index_id > 0 
         AND i.is_primary_key = 0 
         AND i.is_unique_constraint = 0
         AND i.name IS NOT NULL
+        AND o.type IN ('U', 'V')
     `);
     counts.indexes = idxResult.recordset[0].cnt;
 
@@ -217,14 +218,15 @@ const getDeployedObjectsList = async (pool, dbName) => {
 
     // Indexes (excluding PK and UQ indexes)
     const idxs = await pool.request().query(`
-      SELECT s.name AS SchemaName, t.name AS TableName, i.name AS IndexName
+      SELECT s.name AS SchemaName, o.name AS TableName, i.name AS IndexName
       FROM sys.indexes i
-      JOIN sys.tables t ON i.object_id = t.object_id
-      JOIN sys.schemas s ON t.schema_id = s.schema_id
+      JOIN sys.objects o ON i.object_id = o.object_id
+      JOIN sys.schemas s ON o.schema_id = s.schema_id
       WHERE i.index_id > 0 
         AND i.is_primary_key = 0 
         AND i.is_unique_constraint = 0
         AND i.name IS NOT NULL
+        AND o.type IN ('U', 'V')
     `);
     idxs.recordset.forEach(r => indexes.push({ schema: r.SchemaName, name: r.IndexName, tableName: r.TableName }));
     

@@ -78,14 +78,124 @@ export default function ExportCentre({
 
   const categoryOrder = ['SCHEMA', 'EXTENSION', 'ENUM', 'DOMAIN', 'COMPOSITE', 'SEQUENCE', 'TABLE', 'CONSTRAINT', 'INDEX', 'VIEW', 'FUNCTION', 'PROCEDURE', 'TRIGGER', 'DATA', 'OTHER'];
 
+  const resolveSchemaName = (origSchema) => {
+    const s = origSchema || 'dbo';
+    if (!preserveSchema || s.toLowerCase() === 'public') {
+      return 'dbo';
+    }
+    return s;
+  };
+
+  const getReferencedObjects = (rawSql, activeObjId) => {
+    const refs = [];
+    if (!rawSql) return refs;
+    const cleanSql = rawSql.replace(/\/\*[\s\S]*?\*\//g, '').replace(/--.*/g, '');
+    const words = cleanSql.match(/\b[a-zA-Z_][a-zA-Z0-9_]*\b/g) || [];
+    const uniqueWords = new Set(words.map(w => w.toLowerCase()));
+
+    objects.forEach(other => {
+      if (other.classified.id === activeObjId) return;
+      const otherName = other.classified.name.toLowerCase();
+      const otherSchema = resolveSchemaName(other.classified.schema).toLowerCase();
+      const otherFullName = `${otherSchema}.${otherName}`;
+
+      if (uniqueWords.has(otherName) || cleanSql.toLowerCase().includes(otherFullName)) {
+        refs.push(other);
+      }
+    });
+    return refs;
+  };
+
+  const getObjectFailureDetail = (obj) => {
+    const name = obj.classified.name;
+    const schema = resolveSchemaName(obj.classified.schema);
+    const fullName = `${schema}.${name}`.toLowerCase();
+    const nameLower = name.toLowerCase();
+    const type = obj.classified.type;
+
+    const deployErr = deployResults?.errors?.find(
+      e => (e.object?.toLowerCase() === fullName || e.object?.toLowerCase() === nameLower) &&
+           e.objectType === type
+    );
+    if (deployErr) {
+      const errLower = deployErr.error.toLowerCase();
+      const isDep = errLower.includes('invalid object name') || errLower.includes('could not find') || errLower.includes('dependency');
+      if (!isDep) {
+        return { error: deployErr.error, phase: 'Deployment' };
+      }
+    }
+
+    const compileErr = compileResults?.compilationErrors?.find(
+      e => e.object?.toLowerCase() === fullName || e.object?.toLowerCase() === nameLower || e.object?.toLowerCase() === `[${schema}].[${name}]`.toLowerCase()
+    );
+    if (compileErr) {
+      const errLower = compileErr.error.toLowerCase();
+      const isDep = errLower.includes('invalid object name') || errLower.includes('could not find') || errLower.includes('dependency');
+      if (!isDep) {
+        return { error: compileErr.error, phase: 'Validation' };
+      }
+    }
+
+    return null;
+  };
+
+  const findRootCause = (obj, visited = new Set(), isFirstCall = true) => {
+    if (visited.has(obj.classified.id)) return null;
+    visited.add(obj.classified.id);
+
+    if (!isFirstCall) {
+      const failureDetail = getObjectFailureDetail(obj);
+      if (failureDetail) {
+        return { obj, detail: failureDetail };
+      }
+    }
+
+    const deps = getReferencedObjects(obj.classified.raw, obj.classified.id);
+    for (const dep of deps) {
+      const oName = dep.classified.name.toLowerCase();
+      const oSchema = resolveSchemaName(dep.classified.schema).toLowerCase();
+      const oFullName = `${oSchema}.${oName}`;
+      
+      const inDeploy = deployResults?.errors?.some(
+        e => (e.object?.toLowerCase() === oFullName || e.object?.toLowerCase() === oName) &&
+             e.objectType === dep.classified.type
+      );
+      const inCompile = compileResults?.compilationErrors?.some(
+        e => e.object?.toLowerCase() === oFullName || e.object?.toLowerCase() === oName || e.object?.toLowerCase() === `[${oSchema}].[${dep.classified.name}]`.toLowerCase()
+      );
+      if (inDeploy || inCompile) {
+        const root = findRootCause(dep, visited, false);
+        if (root) return root;
+      }
+    }
+    return null;
+  };
+
   const getDetailedObjectStatus = (obj) => {
     let name = obj.classified.name;
     if (name.includes('.')) {
       name = name.split('.').pop();
     }
-    const schema = obj.classified.schema || 'dbo';
+    const schema = resolveSchemaName(obj.classified.schema);
     const type = obj.classified.type;
     const fullName = `${schema}.${name}`.toLowerCase();
+
+    // Pattern B check: Skip checking catalog and fail if object is unconverted or requires AI
+    const isUnconverted = obj.translation.requiresAi || 
+                          (obj.translation.tsql && (
+                            obj.translation.tsql.includes('PENDING AI TRANSLATION') || 
+                            obj.translation.tsql.includes('NOT CONVERTED')
+                          ));
+    if (isUnconverted) {
+      return {
+        translation: obj.translation.requiresAi && !settings.apiKey ? 'PENDING' : 'FAILED',
+        deployment: 'SKIPPED',
+        validation: 'SKIPPED',
+        status: 'Skipped',
+        error: obj.translation.requiresAi ? 'Requires AI key for translation' : 'Not converted (unsupported feature)',
+        category: 'SKIPPED_BY_RULE'
+      };
+    }
 
     // 1. Translation status
     let translation = 'SUCCESS';
@@ -120,7 +230,8 @@ export default function ExportCentre({
         deploymentError = 'Skipped deployment due to translation failure';
       } else {
         const deployErr = deployResults.errors?.find(
-          e => e.object?.toLowerCase() === fullName || e.object?.toLowerCase() === name.toLowerCase()
+          e => (e.object?.toLowerCase() === fullName || e.object?.toLowerCase() === name.toLowerCase()) &&
+               e.objectType === type
         );
         if (deployErr) {
           deployment = 'FAILED';
@@ -220,8 +331,23 @@ export default function ExportCentre({
 
     if (translation === 'FAILED' || deployment === 'FAILED' || validation === 'FAILED') {
       status = (validationCategory === 'MISSING_DEPENDENCY' || deploymentCategory === 'MISSING_DEPENDENCY') ? 'Dependency Missing' : 'Failed';
-      error = validationError || deploymentError || translationError;
+      error = (validationCategory === 'SKIPPED_AFTER_PREVIOUS_FAILURE') 
+        ? (deploymentError || translationError || validationError) 
+        : ((deploymentCategory === 'SKIPPED_AFTER_PREVIOUS_FAILURE')
+          ? (translationError || deploymentError || validationError)
+          : (validationError || deploymentError || translationError));
       category = validationCategory !== 'PENDING' ? validationCategory : (deploymentCategory !== 'PENDING' ? deploymentCategory : translationCategory);
+
+      if (status === 'Failed' || status === 'Dependency Missing') {
+        const directFailure = getObjectFailureDetail(obj);
+        if (!directFailure) {
+          const root = findRootCause(obj);
+          if (root) {
+            error = `Skipped: depends on [${root.obj.classified.schema || 'dbo'}].[${root.obj.classified.name}] (${root.obj.classified.type}) which failed to deploy.`;
+            status = 'Dependency Missing';
+          }
+        }
+      }
     } else if (translation === 'SUCCESS' && deployment === 'SUCCESS' && validation === 'SUCCESS') {
       status = 'Verified';
       category = 'SUCCESS';
@@ -357,18 +483,38 @@ export default function ExportCentre({
   const failedObjects = useMemo(() => {
     const list = [];
     objects.forEach(obj => {
+      const isUnconverted = obj.translation.requiresAi || 
+                            (obj.translation.tsql && (
+                              obj.translation.tsql.includes('PENDING AI TRANSLATION') || 
+                              obj.translation.tsql.includes('NOT CONVERTED')
+                            ));
+      if (isUnconverted) {
+        return; // Exclude Pattern B
+      }
+
       const res = getDetailedObjectStatus(obj);
       if (res.status === 'Failed' || res.status === 'Dependency Missing') {
         let name = obj.classified.name;
         if (name.includes('.')) {
           name = name.split('.').pop();
         }
+        
+        const rootCause = findRootCause(obj);
+        
         list.push({
+          id: obj.classified.id || `${resolveSchemaName(obj.classified.schema)}.${obj.classified.name}`,
           name: name,
-          schema: obj.classified.schema || 'dbo',
+          schema: resolveSchemaName(obj.classified.schema),
           type: obj.classified.type,
           status: res.status,
-          error: res.error
+          error: res.error,
+          rootCause: rootCause ? {
+            id: rootCause.obj.classified.id || `${resolveSchemaName(rootCause.obj.classified.schema)}.${rootCause.obj.classified.name}`,
+            name: rootCause.obj.classified.name,
+            schema: resolveSchemaName(rootCause.obj.classified.schema),
+            type: rootCause.obj.classified.type,
+            error: rootCause.detail.error
+          } : null
         });
       }
     });
@@ -1272,32 +1418,100 @@ ${objectLogSection}`;
                             </svg>
                             Objects Requiring Attention ({failedObjects.length})
                           </h5>
-                          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
-                            The following objects failed to translate, deploy, or validate successfully:
+                          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
+                            The following objects failed to deploy or validate. Fix the <strong>Root Cause Failures</strong> first to automatically resolve downstream dependencies.
                           </p>
-                          <div style={{ maxHeight: '250px', overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
-                            <table className="object-counts-table" style={{ margin: 0 }}>
-                              <thead>
-                                <tr>
-                                  <th>Type</th>
-                                  <th>Schema</th>
-                                  <th>Name</th>
-                                  <th>Failure Reason / Error</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {failedObjects.map((item, idx) => (
-                                  <tr key={idx}>
-                                    <td><span className="status-badge failed">{item.type}</span></td>
-                                    <td><code>{item.schema}</code></td>
-                                    <td><code>{item.name}</code></td>
-                                    <td style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', textAlign: 'left' }}>
-                                      {item.error ? <code>{item.error}</code> : <span style={{ color: 'var(--text-secondary)' }}>Unknown error / skipped</span>}
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
+
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                            {/* Group 1: Root Cause Failures */}
+                            <div className="failed-group-card" style={{ border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: 'var(--radius)', padding: '1rem', background: 'rgba(239, 68, 68, 0.02)' }}>
+                              <h6 style={{ color: 'var(--error)', marginBottom: '0.75rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <span>🔴 Root Cause Failures (Must Fix First)</span>
+                                <span className="status-badge failed" style={{ fontSize: '0.75rem', padding: '0.1rem 0.4rem' }}>
+                                  {failedObjects.filter(f => !f.rootCause).length}
+                                </span>
+                              </h6>
+                              <div style={{ maxHeight: '200px', overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
+                                <table className="object-counts-table" style={{ margin: 0 }}>
+                                  <thead>
+                                    <tr>
+                                      <th>Type</th>
+                                      <th>Schema</th>
+                                      <th>Name</th>
+                                      <th>Error Message</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {failedObjects.filter(f => !f.rootCause).map((item) => {
+                                      const downstreamCount = failedObjects.filter(d => d.rootCause && d.rootCause.id === item.id).length;
+                                      return (
+                                        <tr key={item.id}>
+                                          <td><span className="status-badge failed">{item.type}</span></td>
+                                          <td><code>{item.schema}</code></td>
+                                          <td>
+                                            <strong><code>{item.name}</code></strong>
+                                            {downstreamCount > 0 && (
+                                              <span className="status-badge warning" style={{ marginLeft: '0.5rem', fontSize: '0.7rem', padding: '0.1rem 0.3rem', verticalAlign: 'middle' }}>
+                                                Blocks {downstreamCount} downstream item{downstreamCount > 1 ? 's' : ''}
+                                              </span>
+                                            )}
+                                          </td>
+                                          <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', textAlign: 'left' }}>
+                                            <code>{item.error}</code>
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                    {failedObjects.filter(f => !f.rootCause).length === 0 && (
+                                      <tr>
+                                        <td colSpan="4" style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '1rem' }}>No direct root-cause failures found.</td>
+                                      </tr>
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+
+                            {/* Group 2: Cascading / Blocked Failures */}
+                            <div className="failed-group-card" style={{ border: '1px solid rgba(245, 158, 11, 0.2)', borderRadius: 'var(--radius)', padding: '1rem', background: 'rgba(245, 158, 11, 0.01)' }}>
+                              <h6 style={{ color: 'var(--warning)', marginBottom: '0.75rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <span>⚠️ Cascading / Blocked Objects</span>
+                                <span className="status-badge warning" style={{ fontSize: '0.75rem', padding: '0.1rem 0.4rem', color: '#000', backgroundColor: 'var(--warning)' }}>
+                                  {failedObjects.filter(f => f.rootCause).length}
+                                </span>
+                              </h6>
+                              <div style={{ maxHeight: '250px', overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
+                                <table className="object-counts-table" style={{ margin: 0 }}>
+                                  <thead>
+                                    <tr>
+                                      <th>Type</th>
+                                      <th>Schema</th>
+                                      <th>Name</th>
+                                      <th>Blocked By (Root Cause)</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {failedObjects.filter(f => f.rootCause).map((item) => (
+                                      <tr key={item.id}>
+                                        <td><span className="status-badge skipped">{item.type}</span></td>
+                                        <td><code>{item.schema}</code></td>
+                                        <td><code>{item.name}</code></td>
+                                        <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', textAlign: 'left' }}>
+                                          <span>Skipped: depends on </span>
+                                          <strong><code>[{item.rootCause.schema}].[{item.rootCause.name}]</code></strong>
+                                          <span> ({item.rootCause.type}) which failed to deploy.</span>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                    {failedObjects.filter(f => f.rootCause).length === 0 && (
+                                      <tr>
+                                        <td colSpan="4" style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '1rem' }}>No cascading failures.</td>
+                                      </tr>
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
                           </div>
                         </div>
                       )}

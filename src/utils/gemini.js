@@ -8,6 +8,7 @@ export async function translatePLpgSQLWithAI({
   objectName, 
   originalSql, 
   triggerFunctionSql = null, 
+  tableDdl = null,
   model = 'gemini-3.1-flash-lite', 
   apiVersion = 'v1',
   sourceDialect = 'postgres',
@@ -56,6 +57,10 @@ Original PostgreSQL referenced FUNCTION statement (trigger logic):
 ${triggerFunctionSql}
 \`\`\``;
     }
+  }
+
+  if (tableDdl) {
+    sqlSection += `\n\nReferenced Table Schema (for column and primary key context):\n\`\`\`sql\n${tableDdl}\n\`\`\``;
   }
 
   let prompt = '';
@@ -140,6 +145,13 @@ Ensure that:
 14. REPLACE INTO: Maps to T-SQL MERGE, but flag the subtle difference: REPLACE INTO deletes and re-inserts the entire row (resetting unspecified columns to defaults), whereas ON DUPLICATE KEY UPDATE only updates the specified columns.
 15. OUT/INOUT Parameters: Map MySQL routine parameters defined as OUT/INOUT to T-SQL OUTPUT parameters.
 16. BEFORE/AFTER Triggers: SQL Server does not support BEFORE triggers. If the trigger is BEFORE, add a warning comment and change it to AFTER or INSTEAD OF. Map OLD/NEW trigger bind variables to deleted/inserted virtual tables. Ensure trigger logic is set-based.
+    - For AFTER INSERT/UPDATE/DELETE triggers that modify another table (e.g. UPDATE products SET stock = stock - NEW.qty WHERE id = NEW.id), translate to a set-based UPDATE statement joining the target table with the inserted or deleted table:
+      UPDATE p
+      SET p.stock = p.stock - i.qty
+      FROM products p
+      JOIN inserted i ON p.id = i.id
+    - For BEFORE/AFTER triggers that modify or validate fields of the row being updated (e.g. SET NEW.resolved_at = NOW()), translate using an AFTER trigger joining the base table with inserted/deleted tables on the primary key to update the column values on the base table.
+    - Never reference 'inserted.column' or 'deleted.column' in the SET or WHERE clause of an UPDATE statement without joining the inserted/deleted table in a FROM clause.
 17. Batch Ending: End every CREATE VIEW / CREATE FUNCTION / CREATE PROCEDURE / CREATE TRIGGER object with GO on its own line immediately after the closing END or semicolon.
 18. CTE (Common Table Expression) Conversion:
     * Remove the MySQL RECURSIVE keyword from WITH RECURSIVE (e.g. WITH RECURSIVE tree AS ... becomes WITH tree AS ...).

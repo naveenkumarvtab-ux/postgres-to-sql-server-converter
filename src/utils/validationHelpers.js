@@ -134,6 +134,40 @@ export function extractLocalScopeNames(cleanSql) {
     }
   }
 
+  // 7. Select Implicit Column Aliases (e.g. COUNT(*) CNT, SUM(x) TOTAL)
+  const selectMatch = cleanSql.match(/\bSELECT\b([\s\S]*?)\bFROM\b/i);
+  if (selectMatch) {
+    const selectClause = selectMatch[1];
+    let parenDepth = 0;
+    let currentPart = '';
+    const parts = [];
+    for (let i = 0; i < selectClause.length; i++) {
+      const char = selectClause[i];
+      if (char === '(') parenDepth++;
+      else if (char === ')') parenDepth--;
+      
+      if (char === ',' && parenDepth === 0) {
+        parts.push(currentPart.trim());
+        currentPart = '';
+      } else {
+        currentPart += char;
+      }
+    }
+    if (currentPart.trim()) {
+      parts.push(currentPart.trim());
+    }
+    
+    parts.forEach(part => {
+      const match = part.match(/\s+([a-zA-Z0-9_]+)$/i);
+      if (match) {
+        const potentialAlias = match[1].toLowerCase();
+        if (!RESERVED_KEYWORDS.has(potentialAlias)) {
+          localNames.add(potentialAlias);
+        }
+      }
+    });
+  }
+
   return localNames;
 }
 

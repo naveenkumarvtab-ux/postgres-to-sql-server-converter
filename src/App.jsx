@@ -588,6 +588,17 @@ export default function App() {
     const triggerFunctionSql = objToTranslate.classified.type === 'TRIGGER' ? 
                                objToTranslate.classified.parsed.functionBody : null;
 
+    let tableDdl = null;
+    if (objToTranslate.classified.type === 'TRIGGER') {
+      const tblName = objToTranslate.classified.parsed.tableName;
+      if (tblName) {
+        const tblObj = currentObjects.find(o => o.classified.type === 'TABLE' && o.classified.name.toLowerCase() === tblName.toLowerCase());
+        if (tblObj) {
+          tableDdl = tblObj.classified.raw;
+        }
+      }
+    }
+
     const activeSchemaMap = buildSchemaMap(currentObjects.map(o => o.classified), settings.preserveSchema);
 
     while (retries <= maxRetries) {
@@ -597,6 +608,7 @@ export default function App() {
         objectName: objToTranslate.classified.name,
         originalSql: objToTranslate.classified.raw,
         triggerFunctionSql,
+        tableDdl,
         model: settings.model,
         sourceDialect: sourceDialect,
         validationFeedback: validationFeedback,
