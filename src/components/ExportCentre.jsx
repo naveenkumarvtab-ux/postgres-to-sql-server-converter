@@ -1091,7 +1091,11 @@ ${objectLogSection}`;
       }
     } catch (err) {
       setDeployPhase('failed');
-      setDeployLogs(prev => [...prev, { type: 'error', msg: `Operation failed: ${err.message}` }]);
+      let errMsg = `Operation failed: ${err.message}`;
+      if (err.message.toLowerCase().includes('fetch') && window.location.protocol === 'https:') {
+        errMsg = `Operation failed: Local Agent connection blocked. Because this site is running on HTTPS (${window.location.host}), your browser blocks direct HTTP requests to the local server (Mixed Content). To deploy, please run the application locally (via 'npm run dev:full' or double-clicking the startup script) and access it at http://localhost:5173 or http://localhost:3000 instead.`;
+      }
+      setDeployLogs(prev => [...prev, { type: 'error', msg: errMsg }]);
     }
   };
 
