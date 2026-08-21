@@ -299,10 +299,13 @@ export default function ExportCentre({
             INDEX: 'indexes',
             SEQUENCE: 'sequences'
           };
+          const isTempTable = (type === 'TABLE' && (obj.classified.parsed?.isGlobalTemp || obj.classified.parsed?.isLocalTemp));
           const listKey = categoryMap[type];
           let isCreated = false;
           
-          if (listKey) {
+          if (isTempTable) {
+            isCreated = (deployment === 'SUCCESS');
+          } else if (listKey) {
             isCreated = checkInList(compileResults.deployedObjects?.[listKey]);
             if (!isCreated && (type === 'FUNCTION' || type === 'PROCEDURE')) {
               const otherKey = type === 'FUNCTION' ? 'procedures' : 'functions';
@@ -351,6 +354,10 @@ export default function ExportCentre({
     } else if (translation === 'SUCCESS' && deployment === 'SUCCESS' && validation === 'SUCCESS') {
       status = 'Verified';
       category = 'SUCCESS';
+      const isTempTable = (type === 'TABLE' && (obj.classified.parsed?.isGlobalTemp || obj.classified.parsed?.isLocalTemp));
+      if (isTempTable) {
+        error = '✓ PASS (Session-scoped temp table — not stored in global catalog)';
+      }
     } else {
       status = 'Skipped';
       category = translationCategory !== 'SUCCESS' ? translationCategory : 'PENDING';

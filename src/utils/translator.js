@@ -1133,9 +1133,10 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
         }
       }
 
-      if (obj.parsed.isGlobalTemp) {
-        result.tsql = `-- NOTE: Converted from Oracle GLOBAL TEMPORARY TABLE.\n` +
-                      `-- Oracle GTT definitions are permanent/schema-level with session-scoped data;\n` +
+      if (obj.parsed.isGlobalTemp || obj.parsed.isLocalTemp) {
+        const sourceTempName = obj.parsed.isGlobalTemp ? 'GLOBAL TEMPORARY TABLE' : 'TEMPORARY TABLE';
+        result.tsql = `-- NOTE: Converted from ${dialect.toUpperCase()} ${sourceTempName}.\n` +
+                      `-- ${dialect.toUpperCase()} temporary table definitions are permanent/schema-level with session-scoped data;\n` +
                       `-- SQL Server local temp tables (#TableName) don't persist independently of the session that creates them.\n` +
                       `CREATE TABLE [#${obj.name}] (\n` +
                       `${colsTsql.join(',\n')}\n` +
@@ -1961,6 +1962,23 @@ export function validateTableTsql(tsql, tableName, warnings) {
   }
 }
 
+export function validateFunctionTsql(tsql, functionName, warnings) {
+  if (!tsql) return;
+  const trimmed = tsql.trim();
+  const lastEndIdx = trimmed.toUpperCase().lastIndexOf('END');
+  if (lastEndIdx === -1) {
+    warnings.push(`⚠️ Function [${functionName}] generated T-SQL has no END statement.`);
+    return;
+  }
+  
+  const beforeEnd = trimmed.substring(0, lastEndIdx).trim();
+  const cleanBeforeEnd = beforeEnd.replace(/\/\*[\s\S]*?\*\//g, '').replace(/--.*/g, '').trim();
+  
+  if (!/RETURN\b\s*[^;]*;?$/i.test(cleanBeforeEnd)) {
+    warnings.push(`⚠️ Function [${functionName}] generated T-SQL does not terminate with an unconditional RETURN statement.`);
+  }
+}
+
 export function splitParenthesesArguments(argStr) {
   const args = [];
   let current = '';
@@ -2312,6 +2330,11 @@ export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'p
   // 7. AGE(expr)
   let ageIdx = clean.toUpperCase().indexOf('AGE(');
   while (ageIdx !== -1) {
+    const prevChar = ageIdx > 0 ? clean[ageIdx - 1] : '';
+    if (/[a-zA-Z0-9_]/.test(prevChar)) {
+      ageIdx = clean.toUpperCase().indexOf('AGE(', ageIdx + 4);
+      continue;
+    }
     // Prevent matching DATE_PART or EXTRACT wrappers
     const prevSub = clean.substring(Math.max(0, ageIdx - 15), ageIdx).toUpperCase();
     if (prevSub.includes('DATE_PART') || prevSub.includes('EXTRACT')) {
@@ -2481,18 +2504,31 @@ export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'p
   }
 
   // 11.96. Stored Procedure/Function Fixes: Oracle package-level variable SET assignment to sys.sp_set_session_context
-  const pkgVarSetRegex = /\bSET\s+(?:\[(G_[a-zA-Z0-9_]+)\]|(G_[a-zA-Z0-9_]+))\s*=\s*([a-zA-Z0-9_\.@#\[\]'"]+);?/gi;
-  clean = clean.replace(pkgVarSetRegex, (match, g1, g2, val) => {
-    const varName = g1 || g2;
+  const pkgVarSetRegex = /\bSET\s+(?:@|\[)?(G_[a-zA-Z0-9_]+)\]?\s*=\s*([a-zA-Z0-9_\.@#\[\]'"]+);?/gi;
+  clean = clean.replace(pkgVarSetRegex, (match, varName, val) => {
     return `EXEC sys.sp_set_session_context @key = N'${varName}', @value = ${val};`;
   });
 
   // 11.97. Stored Procedure/Function Fixes: Oracle package-level variable references to SESSION_CONTEXT
+  const pkgVarAtRefRegex = /@(G_[a-zA-Z0-9_]+)\b(?!')/gi;
+  clean = clean.replace(pkgVarAtRefRegex, "CAST(SESSION_CONTEXT(N'$1') AS NVARCHAR(MAX))");
+
   const pkgVarBracketRefRegex = /(?<![@\.#])\[(G_[a-zA-Z0-9_]+)\]/gi;
   clean = clean.replace(pkgVarBracketRefRegex, "CAST(SESSION_CONTEXT(N'$1') AS NVARCHAR(MAX))");
 
   const pkgVarRefRegex = /(?<![@\.#])\b(G_[a-zA-Z0-9_]+)\b(?!')/gi;
   clean = clean.replace(pkgVarRefRegex, "CAST(SESSION_CONTEXT(N'$1') AS NVARCHAR(MAX))");
+
+  // 11.98. Stored Procedure/Function Fixes: Strip schema qualifiers from temp tables (#TableName)
+  const schemaTempRegex = /(?:\[?[a-zA-Z0-9_]+\]?\s*\.\s*)(\[?#[a-zA-Z0-9_]+\]?)/gi;
+  clean = clean.replace(schemaTempRegex, '$1');
+
+  // 11.99. Stored Procedure/Function Fixes: Strip schema qualifiers from cursor references
+  const cursorKeywords = /\b(OPEN|CLOSE|DEALLOCATE)\s+(?:\[?[a-zA-Z0-9_]+\]?\s*\.\s*)(\[?[a-zA-Z0-9_]+\]?)/gi;
+  clean = clean.replace(cursorKeywords, '$1 $2');
+
+  const fetchCursorKeywords = /\b(FETCH\s+(?:NEXT|PRIOR|FIRST|LAST|ABSOLUTE\s+-?\d+|RELATIVE\s+-?\d+)?\s*FROM\s+)(?:\[?[a-zA-Z0-9_]+\]?\s*\.\s*)(\[?[a-zA-Z0-9_]+\]?)/gi;
+  clean = clean.replace(fetchCursorKeywords, '$1$2');
 
   return clean;
 }

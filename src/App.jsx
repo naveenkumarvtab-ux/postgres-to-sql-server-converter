@@ -8,7 +8,7 @@ import AuthModal from './components/AuthModal';
 import ResetPasswordModal from './components/ResetPasswordModal';
 import { supabase } from './utils/supabaseClient';
 import { splitSqlStatements, classifyStatement, splitOraclePackageBody, buildSchemaMap } from './utils/parser';
-import { translateObject, resolveDependencies, applySqlConversionRules } from './utils/translator';
+import { translateObject, resolveDependencies, applySqlConversionRules, validateFunctionTsql } from './utils/translator';
 import { translatePLpgSQLWithAI } from './utils/gemini';
 import { validateMigration } from './utils/validator';
 
@@ -681,12 +681,19 @@ export default function App() {
 
       setObjects(prev => prev.map(obj => {
         if (obj.classified.id === id) {
+          const warnings = [...(obj.translation.warnings || [])].filter(
+            w => !w.includes('requires translation') && !w.includes('PL/pgSQL database object')
+          );
+          if (obj.classified.type === 'FUNCTION') {
+            validateFunctionTsql(finalTsql, obj.classified.name, warnings);
+          }
           return {
             ...obj,
             translation: {
               ...obj.translation,
               tsql: finalTsql,
-              requiresAi: false
+              requiresAi: false,
+              warnings
             }
           };
         }
