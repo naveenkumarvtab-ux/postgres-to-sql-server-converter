@@ -1137,7 +1137,7 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
         result.tsql = `-- NOTE: Converted from Oracle GLOBAL TEMPORARY TABLE.\n` +
                       `-- Oracle GTT definitions are permanent/schema-level with session-scoped data;\n` +
                       `-- SQL Server local temp tables (#TableName) don't persist independently of the session that creates them.\n` +
-                      `CREATE TABLE #[${obj.name}] (\n` +
+                      `CREATE TABLE [#${obj.name}] (\n` +
                       `${colsTsql.join(',\n')}\n` +
                       `);\nGO`;
       } else if (deploymentMode === 'deployment') {
@@ -2198,6 +2198,9 @@ export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'p
     }
   }
 
+  // Prepend # to Oracle/Postgres Global Temporary Table references (GTT_*)
+  clean = clean.replace(/(?<!#)\bGTT_([a-zA-Z0-9_]+)\b/gi, '#GTT_$1');
+
   // Oracle Sequence NEXTVAL/CURRVAL translation
   const oracleNextvalRegex = /(\b[a-zA-Z0-9_\.\[\]]+)\.NEXTVAL\b/gi;
   clean = clean.replace(oracleNextvalRegex, (match, seqRef) => {
@@ -2462,6 +2465,34 @@ export function applySqlConversionRules(sql, useUnicode = true, schemaMap = { 'p
     if (trimmed.endsWith(';')) return cleaned;
     return trimmed + ';';
   });
+
+  // 11.95. Function Fixes: Ensure T-SQL scalar functions end with an unconditional RETURN statement
+  if (/CREATE\s+(?:OR\s+ALTER\s+)?FUNCTION\b/i.test(clean)) {
+    const trimmed = clean.trim();
+    const lastEndIdx = trimmed.toUpperCase().lastIndexOf('END');
+    if (lastEndIdx !== -1) {
+      const beforeEnd = trimmed.substring(0, lastEndIdx).trim();
+      const cleanBeforeEnd = beforeEnd.replace(/\/\*[\s\S]*?\*\//g, '').replace(/--.*/g, '').trim();
+      if (!/RETURN\b\s*[^;]*;?$/i.test(cleanBeforeEnd)) {
+        const endPart = trimmed.substring(lastEndIdx);
+        clean = beforeEnd + '\n    RETURN NULL;\n' + endPart;
+      }
+    }
+  }
+
+  // 11.96. Stored Procedure/Function Fixes: Oracle package-level variable SET assignment to sys.sp_set_session_context
+  const pkgVarSetRegex = /\bSET\s+(?:\[(G_[a-zA-Z0-9_]+)\]|(G_[a-zA-Z0-9_]+))\s*=\s*([a-zA-Z0-9_\.@#\[\]'"]+);?/gi;
+  clean = clean.replace(pkgVarSetRegex, (match, g1, g2, val) => {
+    const varName = g1 || g2;
+    return `EXEC sys.sp_set_session_context @key = N'${varName}', @value = ${val};`;
+  });
+
+  // 11.97. Stored Procedure/Function Fixes: Oracle package-level variable references to SESSION_CONTEXT
+  const pkgVarBracketRefRegex = /(?<![@\.#])\[(G_[a-zA-Z0-9_]+)\]/gi;
+  clean = clean.replace(pkgVarBracketRefRegex, "CAST(SESSION_CONTEXT(N'$1') AS NVARCHAR(MAX))");
+
+  const pkgVarRefRegex = /(?<![@\.#])\b(G_[a-zA-Z0-9_]+)\b(?!')/gi;
+  clean = clean.replace(pkgVarRefRegex, "CAST(SESSION_CONTEXT(N'$1') AS NVARCHAR(MAX))");
 
   return clean;
 }
