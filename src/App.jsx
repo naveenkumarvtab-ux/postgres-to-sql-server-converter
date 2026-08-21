@@ -8,7 +8,7 @@ import AuthModal from './components/AuthModal';
 import ResetPasswordModal from './components/ResetPasswordModal';
 import { supabase } from './utils/supabaseClient';
 import { splitSqlStatements, classifyStatement, splitOraclePackageBody, buildSchemaMap } from './utils/parser';
-import { translateObject, resolveDependencies } from './utils/translator';
+import { translateObject, resolveDependencies, applySqlConversionRules } from './utils/translator';
 import { translatePLpgSQLWithAI } from './utils/gemini';
 import { validateMigration } from './utils/validator';
 
@@ -583,7 +583,7 @@ export default function App() {
   const translateAndSelfCorrect = async (objToTranslate, currentObjects, maxRetries = 2) => {
     let retries = 0;
     let validationFeedback = null;
-    let translatedSql = '';
+    let finalTsql = '';
 
     const triggerFunctionSql = objToTranslate.classified.type === 'TRIGGER' ? 
                                objToTranslate.classified.parsed.functionBody : null;
@@ -602,7 +602,7 @@ export default function App() {
     const activeSchemaMap = buildSchemaMap(currentObjects.map(o => o.classified), settings.preserveSchema);
 
     while (retries <= maxRetries) {
-      translatedSql = await translatePLpgSQLWithAI({
+      const translatedSql = await translatePLpgSQLWithAI({
         apiKey: settings.apiKey,
         objectType: objToTranslate.classified.type,
         objectName: objToTranslate.classified.name,
@@ -615,7 +615,15 @@ export default function App() {
         schemaMap: activeSchemaMap
       });
 
-      let finalTsql = translatedSql.trim();
+      finalTsql = applySqlConversionRules(
+        translatedSql,
+        settings.useUnicode !== false,
+        activeSchemaMap,
+        {},
+        settings.targetProfile || '2017+',
+        null
+      ).trim();
+      
       if (!finalTsql.toUpperCase().endsWith('GO')) {
         finalTsql += '\nGO';
       }
@@ -634,7 +642,7 @@ export default function App() {
         return {
           schema: o.classified.schema,
           name: o.classified.name,
-          type: o.classified.type,
+          type: o.translation.tsql ? o.classified.type : null, // keep type to validate if translated
           tsql: o.translation.tsql,
           parsed: o.classified.parsed
         };
@@ -653,7 +661,7 @@ export default function App() {
       retries++;
     }
 
-    return translatedSql;
+    return finalTsql;
   };
 
   const handleAiTranslateObject = async (id) => {
