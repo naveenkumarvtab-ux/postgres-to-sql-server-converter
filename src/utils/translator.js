@@ -1401,10 +1401,42 @@ export function translateObject(obj, useUnicode = true, metadata = null, enums =
       }
 
       if (dialect === 'oracle') {
-        const tsql = convertOracleViewToTsql(obj.raw, obj.schema, obj.name);
-        result.tsql = tsql;
-        result.requiresAi = false;
-        result.warnings.push(`Successfully compiled Oracle View to T-SQL view.`);
+        const hasConnectBy = /CONNECT\s+BY|START\s+WITH/i.test(obj.raw);
+        if (hasConnectBy) {
+          result.requiresAi = true;
+          result.tsql = `-- PENDING AI TRANSLATION --\n-- The original VIEW object '${obj.name}' contains Oracle hierarchical CONNECT BY logic.\n-- Click 'AI Translate' to convert this logic to T-SQL recursive CTE.\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+          result.warnings.push(`View '${obj.name}' contains Oracle hierarchical CONNECT BY logic. It requires translation by the AI model.`);
+        } else {
+          const tsql = convertOracleViewToTsql(obj.raw, obj.schema, obj.name);
+          result.tsql = tsql;
+          result.requiresAi = false;
+          result.warnings.push(`Successfully compiled Oracle View to T-SQL view.`);
+        }
+        break;
+      }
+
+      if (dialect === 'postgresql') {
+        const hasConnectBy = /CONNECT\s+BY|START\s+WITH/i.test(obj.raw);
+        if (hasConnectBy) {
+          result.requiresAi = true;
+          result.tsql = `-- PENDING AI TRANSLATION --\n-- The original VIEW object '${obj.name}' contains hierarchical CONNECT BY logic.\n-- Click 'AI Translate' to convert this logic to T-SQL recursive CTE.\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+          result.warnings.push(`View '${obj.name}' contains hierarchical CONNECT BY logic. It requires translation by the AI model.`);
+        } else {
+          let tsql = convertPostgresViewToTsql(obj.raw, obj.schema, obj.name);
+          tsql = applySqlConversionRules(tsql, useUnicode, schemaMap, tableColumnsMap, sqlServerVersion, metadataRepository);
+          
+          const errors = validateQueryDependencies(tsql, obj.name, obj.type, metadataRepository, schemaMap);
+          if (errors && errors.length > 0) {
+            result.requiresAi = true;
+            result.tsql = `-- ERROR: [Validation Failure] View cannot compile due to missing objects/columns:\n` +
+                          errors.map(e => `-- - ${e}`).join('\n') + `\n\n/* ORIGINAL CODE:\n${obj.raw}\n*/`;
+            result.warnings.push(...errors);
+          } else {
+            result.requiresAi = false;
+            result.tsql = tsql;
+            result.warnings.push(`Successfully compiled PostgreSQL View to T-SQL view.`);
+          }
+        }
         break;
       }
 
@@ -2965,6 +2997,35 @@ function convertOracleToDate(sql) {
   });
 }
 
+export function convertPostgresViewToTsql(sql, schemaName, viewName) {
+  let tsql = sql;
+  
+  // Format CREATE VIEW statement
+  tsql = tsql.replace(/CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+([a-zA-Z0-9_.]+)\s+AS/i, (match, fullViewName) => {
+    const parts = fullViewName.split('.');
+    const bracketedName = parts.map(p => `[${p.trim()}]`).join('.');
+    return `CREATE OR ALTER VIEW ${bracketedName} AS`;
+  });
+  
+  // Replace PostgreSQL string concat operator || with +
+  tsql = tsql.replace(/\|\|/g, '+');
+  
+  // Support common Oracle-compatibility functions in PG (like NVL, DECODE)
+  tsql = tsql.replace(/NVL\s*\(/gi, 'ISNULL(');
+  tsql = convertOracleDecode(tsql);
+  
+  if (!tsql.trim().endsWith('GO')) {
+    const trimmed = tsql.trim();
+    if (trimmed.endsWith(';')) {
+      tsql = trimmed + '\nGO';
+    } else {
+      tsql = trimmed + ';\nGO';
+    }
+  }
+  
+  return tsql;
+}
+
 export function convertOracleViewToTsql(sql, schemaName, viewName) {
   let tsql = sql;
   
@@ -2975,6 +3036,9 @@ export function convertOracleViewToTsql(sql, schemaName, viewName) {
     return `CREATE OR ALTER VIEW ${bracketedName} AS`;
   });
   
+  // Translate string concatenation || to +
+  tsql = tsql.replace(/\|\|/g, '+');
+
   // Basic functions
   tsql = tsql.replace(/NVL\s*\(/gi, 'ISNULL(');
   tsql = tsql.replace(/LISTAGG\s*\(/gi, 'STRING_AGG(');
