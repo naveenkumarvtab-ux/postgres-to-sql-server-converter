@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import JSZip from 'jszip';
+import { getApiUrl } from '../utils/api';
 
 function sortTopologically(list, allObjects, circularWarnings = null) {
   const result = [];
@@ -49,11 +50,6 @@ function sortTopologically(list, allObjects, circularWarnings = null) {
   });
   return result;
 }
-
-const getApiUrl = (path) => {
-  const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-  return isLocalDev ? path : `http://127.0.0.1:3001${path}`;
-};
 
 export default function ExportCentre({ 
   objects, 

@@ -7,6 +7,7 @@ import SummaryReport from './components/SummaryReport';
 import AuthModal from './components/AuthModal';
 import ResetPasswordModal from './components/ResetPasswordModal';
 import { supabase } from './utils/supabaseClient';
+import { getApiUrl } from './utils/api';
 import { splitSqlStatements, classifyStatement, splitOraclePackageBody, buildSchemaMap } from './utils/parser';
 import { translateObject, resolveDependencies, applySqlConversionRules, validateFunctionTsql } from './utils/translator';
 import { translatePLpgSQLWithAI } from './utils/gemini';
@@ -114,15 +115,25 @@ export default function App() {
     const ssoToken = new URLSearchParams(window.location.search).get('token');
     if (ssoToken) {
       setAuthLoading(true);
-      const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-      const apiUrl = isLocalDev ? '/api/sso/vtab-sso' : 'http://127.0.0.1:3001/api/sso/vtab-sso';
+      let apiUrl;
+      try {
+        apiUrl = getApiUrl('/api/sso/vtab-sso');
+      } catch (err) {
+        console.error('SSO configuration error:', err);
+        setAuthLoading(false);
+        return;
+      }
       
       fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: ssoToken })
       })
-      .then(res => res.json())
+      .then(async res => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'SSO Failed');
+        return data;
+      })
       .then(data => {
         if (data.magicLink) {
           window.location.href = data.magicLink;
@@ -134,6 +145,7 @@ export default function App() {
       .catch(err => {
         setAuthLoading(false);
         console.error('SSO Error:', err);
+        alert(err.message || 'Unable to start the SSO session.');
       });
     } else {
       supabase.auth.getSession().then(({ data: { session } }) => {

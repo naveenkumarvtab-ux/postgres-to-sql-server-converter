@@ -37,7 +37,7 @@ router.post('/vtab-sso', async (req, res) => {
         const { data: { users }, error: userError } = await supabase.auth.admin.listUsers();
         if (userError) throw userError;
         
-        const existingUser = users.find(u => u.email === email);
+        const existingUser = users.find(u => u.email?.toLowerCase() === email);
         if (!existingUser) {
             return res.status(403).json({ error: 'SSO user is not registered in this application.' });
         }
