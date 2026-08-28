@@ -12,9 +12,11 @@ const ssoRoutes = require('./routes/sso');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const FRONTEND_DIST = path.join(__dirname, '..', 'dist');
 
 app.use(cors());
 app.use(express.json({ limit: '100mb' }));
+app.use(express.static(FRONTEND_DIST));
 
 // Create exports directory on startup
 const EXPORTS_DIR = 'C:\\MigrationToSQL\\exports';
@@ -27,6 +29,17 @@ app.use('/api/connection', connectionRoutes);
 app.use('/api/deploy', deployRoutes);
 app.use('/api/backup', backupRoutes);
 app.use('/api/sso', ssoRoutes);
+
+// Render deploys this project as one Web Service. Non-API requests, including
+// the VTAB365 `/?token=...` launch URL, must load the Vite single-page app.
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api')) {
+    return res.status(404).json({ error: 'API route not found' });
+  }
+  res.sendFile(path.join(FRONTEND_DIST, 'index.html'), (err) => {
+    if (err) next(err);
+  });
+});
 
 app.use((err, req, res, next) => {
   console.error(err.stack);
