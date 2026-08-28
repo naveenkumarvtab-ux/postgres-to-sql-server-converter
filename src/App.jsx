@@ -111,12 +111,36 @@ export default function App() {
     }
 
     // Check current session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
-      setAuthLoading(false);
-    }).catch(() => {
-      setAuthLoading(false);
-    });
+    const ssoToken = new URLSearchParams(window.location.search).get('token');
+    if (ssoToken) {
+      setAuthLoading(true);
+      fetch('/api/sso/vtab-sso', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: ssoToken })
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.magicLink) {
+          window.location.href = data.magicLink;
+        } else {
+          setAuthLoading(false);
+          alert(data.error || 'SSO Failed');
+        }
+      })
+      .catch(err => {
+        setAuthLoading(false);
+        console.error('SSO Error:', err);
+      });
+    } else {
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        setUser(session?.user ?? null);
+        setAuthLoading(false);
+      }).catch(() => {
+        setAuthLoading(false);
+      });
+    }
+
 
     // Listen for auth state changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {

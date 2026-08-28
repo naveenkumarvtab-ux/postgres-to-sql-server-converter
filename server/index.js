@@ -8,6 +8,7 @@ const { closePool } = require('./config/database');
 const connectionRoutes = require('./routes/connection');
 const deployRoutes = require('./routes/deploy');
 const backupRoutes = require('./routes/backup');
+const ssoRoutes = require('./routes/sso');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -25,6 +26,7 @@ if (!fs.existsSync(EXPORTS_DIR)) {
 app.use('/api/connection', connectionRoutes);
 app.use('/api/deploy', deployRoutes);
 app.use('/api/backup', backupRoutes);
+app.use('/api/sso', ssoRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err.stack);
