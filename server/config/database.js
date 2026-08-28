@@ -1,4 +1,7 @@
-const sql = require('mssql/msnodesqlv8');
+// Use the cross-platform Tedious driver bundled with `mssql`. The previous
+// msnodesqlv8 driver only works on Windows and prevents the Render (Linux)
+// service from installing at all.
+const sql = require('mssql');
 
 let pool = null;
 
@@ -11,27 +14,28 @@ const defaultConfig = {
   }
 };
 
-const buildConnectionString = (config) => {
-  const server = config.server || 'localhost';
-  const database = config.database || 'master';
-  const isTrusted = config.options?.trustedConnection !== false && !config.user;
-  
-  let connStr = `Driver={ODBC Driver 17 for SQL Server};Server=${server};Database=${database};TrustServerCertificate=yes;`;
-  if (isTrusted) {
-    connStr += 'Trusted_Connection=yes;';
-  } else {
-    connStr += `Uid=${config.user};Pwd=${config.password};`;
+const buildConnectionConfig = (config) => {
+  if (!config.user || !config.password) {
+    throw new Error('SQL Server username and password are required. Windows integrated authentication is available only in the local Windows desktop deployment.');
   }
-  return connStr;
+
+  return {
+    server: config.server || 'localhost',
+    database: config.database || 'master',
+    user: config.user,
+    password: config.password,
+    options: {
+      encrypt: process.env.SQL_ENCRYPT === 'true',
+      trustServerCertificate: true
+    }
+  };
 };
 
 const getPool = async (customConfig = null) => {
   if (pool) return pool;
   
   const baseConfig = customConfig || defaultConfig;
-  const config = {
-    connectionString: buildConnectionString(baseConfig)
-  };
+  const config = buildConnectionConfig(baseConfig);
   
   try {
     pool = await sql.connect(config);
@@ -46,9 +50,7 @@ const testConnection = async (customConfig) => {
   let tempPool = null;
   try {
     const baseConfig = customConfig || defaultConfig;
-    const config = {
-      connectionString: buildConnectionString(baseConfig)
-    };
+    const config = buildConnectionConfig(baseConfig);
     tempPool = await sql.connect(config);
     const result = await getServerInfo(tempPool);
     return { success: true, ...result };
