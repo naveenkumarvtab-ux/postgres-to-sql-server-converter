@@ -114,7 +114,10 @@ export default function App() {
     const ssoToken = new URLSearchParams(window.location.search).get('token');
     if (ssoToken) {
       setAuthLoading(true);
-      fetch('/api/sso/vtab-sso', {
+      const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+      const apiUrl = isLocalDev ? '/api/sso/vtab-sso' : 'http://127.0.0.1:3001/api/sso/vtab-sso';
+      
+      fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: ssoToken })
